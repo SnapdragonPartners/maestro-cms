@@ -42,8 +42,10 @@ structurally prevented.
 
 ## Consequences
 
-- No duplicate tokenizer; model knowledge stays in `maestro-llms`, and chunk-time
-  counts no longer drift from reservation-time counts.
+- No duplicate tokenizer; model knowledge stays in `maestro-llms`. The library
+  owns both estimation policies, and their intentional bias difference (neutral
+  ~4 chars/token for chunking vs. high-biased ~3 for the limiter) is documented
+  rather than divergent by accident.
 - `chunk` composes with any estimator via the injected function; char/N is the
   zero-dependency default, `llms.EstimateTextTokens` the standard one.
 - A future tokenizer-backed, model-aware `TextEstimator` in maestro-llms
