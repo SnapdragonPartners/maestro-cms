@@ -13,6 +13,8 @@ The repository is pre-implementation. The first committed artifacts are conceptu
 - `README.md` — high-level product/library intent.
 - `docs/spec-v1.md` — draft v1 specification and extraction plan.
 
+`CLAUDE.md` is a near-verbatim mirror of this file for Claude Code. Keep the two in sync: when you change one, apply the same change to the other.
+
 The current goal is to turn the draft specification into a concrete engineering plan, then extract the first reusable package slices from Morris and Maestro.
 
 ## What This Package Is

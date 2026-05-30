@@ -1,442 +1,335 @@
 # Maestro CMS Spec v1
 
-Status: Draft
+Status: Draft (revised 2026-05-30 after grounding the original draft against the
+`maestro`, `maestro-llms`, `morris`, and `cooper` repositories)
+
+The load-bearing decisions in this spec are recorded as ADRs under
+[`docs/adr/`](adr/README.md) and are referenced inline. Read those for the full
+rationale.
 
 ## 1. Purpose
 
 Maestro CMS is a shared Go library for document, media, and knowledge engines.
 
-It should extract reusable content and knowledge primitives from Morris and Maestro, support Cooper as a new product application, and remain open-source in the same spirit as `github.com/SnapdragonPartners/maestro-llms`.
+It should extract reusable content primitives from Morris and Maestro, support
+Cooper as a new product application, and remain open-source in the same spirit as
+`github.com/SnapdragonPartners/maestro-llms`.
 
-The library should make it easier to build applications that ingest content, derive text or other artifacts, chunk and embed material, index it, retrieve relevant context, and expose that context to chat, MCP tools, or application UI.
+The goal is explicitly to **get ahead of duplication**. Embedding contracts have
+already been re-implemented independently in Morris; tokenization exists in two
+places; content modeling is about to be re-derived per app. This library defines
+the boundaries proactively so the apps can be refactored onto it, rather than
+codifying the apps as they happen to be today.
 
 ## 2. Initial Consumers
 
+A note on maturity, because it shapes how much weight each repo's current code
+should carry:
+
+- **`maestro-llms`** is the only stable sibling — freshly extracted and tested. We
+  build on it and extend it. (See §8 for a work request we are sending its way.)
+- **`maestro`** is a battle-tested app, but its `knowledge`/graph component is its
+  least mature and optional part. It is a source of ideas, not proven content code.
+- **`morris`** is early in development. Its extraction/chunking/storage code is
+  clean and reusable, but its chunker is not yet wired into production, and its
+  embedding interface is duplicative (see ADR 0001).
+- **`cooper`** is a concept: a README, no code. It cannot yet validate any boundary;
+  it informs requirements, not interfaces.
+
 ### Morris
 
-Morris needs high-security document ingestion and retrieval for family offices.
+High-security document ingestion and retrieval for family offices.
 
-Relevant current pieces:
+Reusable pieces (verified):
 
-- MIME-aware text extraction for PDF, DOCX, HTML, Markdown, and plain text.
-- Text chunking for embeddings.
-- Object storage abstraction over GCS.
-- Embedding abstraction over `maestro-llms`.
-- Planned pgvector retrieval over document chunks.
+- MIME-aware text extraction (`internal/extract`) — clean, zero Morris coupling.
+- A prose chunker (`internal/chunk`) — clean, but **not yet used in production**;
+  treat its API as unvalidated.
+- An object-store interface over GCS (`internal/storage`) — clean; path
+  conventions live in the ingest worker, not the interface.
+- An embedding abstraction over `maestro-llms` (`internal/embeddings`) — a
+  near-clone of the `maestro-llms` contract plus an adapter. This is the
+  duplication we are removing (ADR 0001).
 
-Morris-specific concerns that should not move into the shared core:
-
-- Family-office group ACLs.
-- Admin/system privilege separation.
-- LLM handling classification.
-- Admin confirmation before active revision swap.
-- Audit requirements and citation retention policy.
-- Per-client deployment assumptions.
+Morris concerns that stay in Morris: family-office group ACLs, admin/system
+privilege separation, handling classification, admin confirmation before active
+revision swap, audit/citation retention, per-client deployment, the ingestion
+worker, and the document/revision schema.
 
 ### Cooper
 
-Cooper is a lightweight multi-tenant CMS product with an integrated chatbot.
+A lightweight multi-tenant CMS with an integrated chatbot. Currently a concept.
 
-It needs:
+The one strong signal in its README: the first content model is a **sports
+league/team** shape, generalizing later — *not* a generic tenant/collection
+abstraction. So v1 must not bake generic-tenant assumptions into the core.
 
-- Tenant-scoped content ingestion.
-- Public, free-account, member-only, and paid-subscriber access models.
-- Content collections, bundles, teams, exhibits, or other tenant-specific grouping.
-- Chat over whole tenant corpora, content bundles, or individual items.
-- Postgres/pgvector or AlloyDB plus GCS-compatible object storage.
-- Future media support for images, audio, and video.
-
-Cooper-specific concerns that should not move into the shared core:
-
-- Tenant hierarchy.
-- Subscription and billing decisions.
-- Custom-domain publishing.
-- Public website and app UI.
-- Product analytics and tenant administration.
+Cooper-shaped requirements it will eventually impose (all app-owned): tenant
+hierarchy, subscription/billing, access models (public/free/member/paid),
+content grouping (collections, bundles, teams, seasons), custom-domain
+publishing, and product analytics.
 
 ### Maestro
 
-Maestro currently has a project knowledge graph system.
+Has a project knowledge-graph system: DOT parsing, schema validation, SQLite FTS5
+indexing/retrieval, and story-scoped knowledge packs (`pkg/knowledge`, zero
+coupling to Maestro internals; `.maestro/knowledge.dot` is optional). It also has
+a tiktoken-based token counter (`pkg/utils/tiktoken.go`).
 
-Relevant current pieces:
-
-- `.maestro/knowledge.dot` as a repo-backed knowledge graph.
-- DOT parsing into nodes and edges.
-- Schema validation for node and edge attributes.
-- SQLite FTS5 indexing and retrieval.
-- Story-specific knowledge packs.
-- MCP tooling that can expose agent tools.
-
-Maestro also creates pressure for future code-aware chunking and retrieval:
-
-- Code-aware chunkers.
-- AST or tree-sitter-backed parsing.
-- Retrieval over repository files, architectural patterns, and prior decisions.
-- MCP tools over knowledge retrieval.
-
-Maestro-specific concerns that should not move into the shared core:
-
-- Agent state machines.
-- Story/session lifecycle.
-- Workspace layout.
-- Toolloop process effects.
-- Claude Code MCP proxy behavior.
+Maestro's graph informs the v2 graph primitive (ADR 0005), not v1. Its token
+counter is superseded by the estimator that already exists in `maestro-llms`
+(`middleware.TokenEstimator`; ADR 0002), not a `maestro-cms` package. Maestro concerns that stay in Maestro: agent state machines,
+story/session lifecycle, workspace layout, toolloop effects, the MCP server, and
+the architecture-knowledge ontology itself.
 
 ## 3. Core Design Principles
 
-1. The core library should be product-neutral.
-2. Applications own authorization, tenancy, subscriptions, and audit policy.
-3. Storage adapters should be optional and replaceable.
-4. Content sources and derived artifacts should be modeled separately.
-5. "Document" should not be the top-level abstraction. Use "content" so media can fit naturally.
-6. The library should interoperate with `maestro-llms` rather than duplicate provider work.
-7. Interfaces should be small and useful to at least two expected consumers.
-8. Extract code only when the boundary is clear enough to survive multiple clients.
+1. The core library is product-neutral and storage-neutral.
+2. Applications own authorization, tenancy, subscriptions, audit policy, grouping
+   taxonomy, and persistence/schema. The library carries values; apps persist them.
+3. **No domain persistence in the library.** No DB schemas, and no tenant,
+   content, revision, or job state — each app owns those (Morris on Postgres/sqlc,
+   Maestro on SQLite, Cooper TBD). The library returns values; apps persist them.
+   The `store` object-store adapters are *not* an exception to this: they are byte
+   primitives that read/write opaque bytes (raw sources, derived blobs) behind a
+   narrow `Get/Put/Delete/Exists` interface, with no schema or domain knowledge.
+4. Model only what we need now, but as a **subset that later work extends, not a
+   rewrite**. Multi-modality and the future graph must be reachable additively.
+5. "Document" is not the top-level abstraction. "Content" is, so non-text media
+   fits naturally (ADR 0003).
+6. Interoperate with `maestro-llms` rather than duplicate provider work; consume
+   its contracts directly (ADR 0001, ADR 0002).
+7. Prefer small interfaces, options, and adapters over widening central types.
+8. Fakes are first-class: shared behavior ships with deterministic fakes (e.g. a
+   fake embedder) so consumers test offline.
 
-## 4. Proposed Core Concepts
+## 4. Core Concepts
 
-### Content Source
+### Source and Artifact (the content model)
 
-A content source is the original thing the application knows about.
+See ADR 0003. The content model is a **single-parent provenance tree**:
 
-Examples:
+- **Source** — the original: stable opaque ID, media type, content hash, a `store`
+  handle for raw bytes.
+- **Artifact** — a derived thing: stable opaque ID, media type, a single-parent
+  `DerivedFrom` link to a Source or another Artifact, and a payload (inline text
+  or a `store` handle).
 
-- Uploaded PDF.
-- DOCX file.
-- HTML page.
-- Markdown file.
-- External link.
-- Image.
-- Audio recording.
-- Video.
-- Code file.
-- Knowledge graph file.
+A PDF Source fans out to a text Artifact today and may fan out to page-image and
+OCR-text Artifacts later — same type, no remodel. A neutral `map[string]string`
+is the only label carrier; grouping/tag *semantics* are app policy.
 
-The shared library should avoid assuming every source is a document or every source has text.
+### Media type
 
-### Content Version
+A first-class field on Source and Artifact from day one. This is the hinge that
+keeps the model from collapsing back into "content == text".
 
-A version represents one processing snapshot of a source.
+### Retrieval handle (deferred to v1.x)
 
-Morris needs revisions for citation stability, classification safety, and rollback. Cooper may not need visible revision history for MVP, but a version concept is still valuable for reprocessing, rollback, and provenance. Maestro may use versions for repo-backed knowledge or indexed workspace state.
+Retrieval results should expose opaque handles rather than raw storage paths, so
+apps resolve UI links, permissions, and source details outside the model context.
+There is no proven implementation yet (Morris's retrieval is a 37-line stub that
+bakes in group ACLs), so the handle/citation contracts are deferred — see §6.
 
-The shared library should define version/provenance primitives, but applications decide whether and how to persist them.
+### Provisional type sketches
 
-### Artifact
-
-An artifact is derived from a source or version.
-
-Examples:
-
-- Extracted text.
-- Chunks.
-- Embeddings.
-- OCR text.
-- Audio transcript.
-- Video transcript.
-- Keyframes.
-- Thumbnails.
-- Knowledge graph subgraph.
-- Search index records.
-
-Artifacts should carry enough metadata for downstream indexing and provenance without encoding product-specific policy.
-
-### Retrieval Handle
-
-Retrieval results should expose opaque handles rather than raw storage paths by default.
-
-Morris needs this for least-context and security reasons. Cooper and Maestro also benefit because a handle lets the application resolve UI links, permissions, and source details outside the LLM context.
-
-## 5. Candidate Package Boundaries
-
-### `extract`
-
-Reusable extraction interfaces and implementations.
-
-Initial sources from Morris:
-
-- `internal/extract/extract.go`
-- `internal/extract/text.go`
-- `internal/extract/html.go`
-- `internal/extract/pdf.go`
-- `internal/extract/docx.go`
-
-Likely API shape:
+Illustrative, **not binding** — they exist to keep independent implementers from
+diverging on shape. Field names, exact types, and packaging are decided in Phase 1
+(see open questions §10). Go-ish pseudocode:
 
 ```go
-type Extractor interface {
-    Extract(ctx context.Context, r io.Reader) (Extracted, error)
+// content
+type MediaType string // IANA type, e.g. "application/pdf", "text/plain", "image/png"
+
+// StoreHandle is an opaque reference to bytes in a store. The library never
+// interprets Key; only the matching store adapter resolves it.
+type StoreHandle struct {
+    Backend string // adapter id, e.g. "gcs", "fs"
+    Key     string // adapter-defined locator
 }
 
-type Extracted struct {
-    Text string
-    Hash string
-    Bytes int
-    Metadata map[string]string
+// Source is the original content an application knows about.
+type Source struct {
+    ID        string            // stable, opaque, app-assigned
+    MediaType MediaType
+    Hash      string            // content hash of the raw bytes
+    Raw       StoreHandle       // where the raw bytes live
+    Metadata  map[string]string // neutral carrier; no grouping semantics
+}
+
+// Artifact is something derived from a Source or another Artifact (single parent).
+type Artifact struct {
+    ID          string
+    MediaType   MediaType
+    DerivedFrom string            // ID of the single parent Source or Artifact
+    Text        string            // set for textual artifacts
+    Blob        *StoreHandle      // set instead of Text for binary artifacts
+    Metadata    map[string]string
 }
 ```
 
-Open design questions:
-
-- Should extraction return multiple artifacts instead of one text field?
-- Should media extraction live in this package or a parallel `media` package?
-- Should MIME matching and normalization be part of the registry?
-
-### `chunk`
-
-Chunking interfaces and implementations.
-
-Initial source from Morris:
-
-- `internal/chunk/chunk.go`
-
-Future Maestro-driven additions:
-
-- Code-aware chunkers.
-- Language-aware chunkers.
-- AST or tree-sitter chunkers.
-- Markdown section chunkers.
-
-Likely API shape:
-
 ```go
-type Chunker interface {
-    Chunk(ctx context.Context, input ChunkInput) ([]Chunk, error)
+// chunk — pure; estimator injected, defaults to char/4 (ADR 0002)
+type Chunk struct {
+    Text       string
+    Index      int // 0-based position within the source artifact
+    StartByte  int // offset into the artifact text (inclusive)
+    EndByte    int // exclusive
+    TokenCount int // from the injected estimator
 }
 
-type ChunkInput struct {
-    Text string
-    MediaType string
-    SourceName string
-    Metadata map[string]string
+type Config struct {
+    MaxTokens     int
+    OverlapTokens int
+}
+
+type Estimate func(string) int // default: local char/N; later, a maestro-llms text helper
+
+func Split(text string, cfg Config, est Estimate) []Chunk
+```
+
+```go
+// embed — runner over llms.EmbeddingClient (ADR 0001, ADR 0004)
+// Record is one chunk plus its vector, ready for the app to persist.
+type Record struct {
+    SourceID   string
+    ArtifactID string
+    ChunkIndex int
+    Text       string
+    Vector     []float32
+    Model      string // from llms.ModelRef
+    TokenCount int
+}
+
+// RunResult preserves successful records and reports failures per batch.
+type RunResult struct {
+    Records  []Record
+    Failures []BatchFailure
+}
+
+type BatchFailure struct {
+    ChunkIndexes []int
+    Err          error
+    Retryable    bool
 }
 ```
 
-The Morris chunker can become the default prose chunker.
+## 5. Package Boundaries
 
-### `tokens`
+| Package    | In v1? | Shape |
+|------------|:------:|-------|
+| `extract`  | ✅ | MIME-aware extraction. Returns `[]Artifact` (multi-modal; text-only populated today). Lifted from Morris. |
+| `chunk`    | ✅ | **Pure**: `text → []Chunk`. Injected `func(string) int` estimator, char/4 default. Lifted from Morris; API unvalidated, expect revision. |
+| `content`  | ✅ | `Source` + `Artifact` + media type + single-parent provenance + stable IDs + optional neutral metadata map. New, minimal code. |
+| `embed`    | ✅ | **Runner**, not a contract: batches `[]Chunk`, preserves successful batches and reports per-batch failure diagnostics, with ID-order matching / retry / budget-aware batch sizing over `llms.EmbeddingClient`; returns persist-ready records. Optional `Pipeline` chains extract→chunk→embed. (Failure semantics: ADR 0004.) |
+| `store`    | ✅ | `Get/Put/Delete/Exists(key)` object-store interface — opaque, adapter-defined keys, **no path conventions** — plus optional GCS adapter. Clean lift from Morris. A `content.StoreHandle{Backend, Key}` names which adapter resolves a given key. |
+| `testcms`  | ✅ | Deterministic fakes, including a fake embedder. |
+| `retrieval`| v1.x | Search request/response, context-window, source-handle, citation contracts. Deferred until a consumer is ready (§6). |
+| `graph`    | v2 | Generic directed-graph primitive with caller-defined schema (ADR 0005). |
+| `index/*`  | later | Optional adapters (`pgvector`, `sqlitefts`, `alloydb`) once a consumer adopts. |
 
-Token counting and budget-aware text helpers.
+Removed from the original draft:
 
-Initial source from Maestro:
+- **`tokens`** — moved to `maestro-llms` (ADR 0002).
+- **`embed` as a contract package** — redefined as a runner; the contract is
+  `llms.EmbeddingClient` (ADR 0001, ADR 0004).
 
-- `pkg/utils/tiktoken.go`
+Core packages stay provider- and storage-neutral; only optional adapters
+(`store/gcs`, `index/*`) may import cloud SDKs or DB drivers.
 
-Initial source from Morris:
+## 6. Sequencing (ordered by confidence, not just risk)
 
-- Character-based token estimation embedded in `internal/chunk`.
+### Phase 1 — High-confidence content pipeline
 
-This package should support both:
+The pieces that are clean, real, and have a consumer (Morris) ready to adopt:
 
-- Fast approximate counting.
-- Optional tokenizer-backed counting.
+- Repo scaffolding mirrored from `maestro-llms`: `go.mod`
+  (`github.com/SnapdragonPartners/maestro-cms`, matching Go version), Makefile
+  (`build`/`test`/`lint`/`fix`/`tidy`), the strict `.golangci.yaml` (including the
+  depguard core-cannot-import-adapters rule), CI (build-lint-test + weekly
+  `govulncheck`), and pre-push hooks.
+- `extract`, `chunk` (pure), `content` (minimal), `store`, `embed` runner,
+  `testcms` fakes.
+- Refactor Morris to consume these back, and to drop its duplicate embedding
+  interface (pending the team-Morris review in §8).
 
-### `embed`
+### Phase 2 — Retrieval contracts
 
-Embedding contracts used by content workflows.
+`retrieval` handle, citation, search request/response, and context-window types,
+designed once a Phase-1 consumer is persisting embedded records and a second
+consumer's needs are concrete. Do not copy Morris's group-ACL-shaped stub.
 
-Initial source from Morris:
+### Phase 3 (v2) — Graph primitive
 
-- `internal/embeddings/embeddings.go`
+Generic directed graph with caller-defined node/edge schema (ADR 0005). v1
+content already carries the stable IDs it will index.
 
-This should likely remain a small content-facing interface that can be backed by `maestro-llms`.
+### Phase 4 — Index adapters
 
-Open design question:
+`index/pgvector` and `index/sqlitefts` once at least one app is ready to consume
+them. Cooper signals pgvector + GCS as the likely first targets.
 
-- Should this package define its own interface, or should `maestro-llms` expose the canonical embedding interface and Maestro CMS consume it?
+### Phase 5 — Media artifacts
 
-### `content`
+OCR, audio/video transcription, keyframes — populated as new `Artifact` variants
+the `extract` return type already admits. No content remodel required.
 
-Core source/version/artifact/provenance types.
+## 7. What Not To Extract
 
-This should be new code rather than directly copied from Morris or Maestro.
+Stays in the apps (may inspire interfaces, never becomes core):
 
-It should avoid application-specific fields like `owner_user_id`, `classification_status`, `session_id`, or `story_id`.
+- Morris: ingestion worker, document/revision schema, handling classification,
+  audit repository, group ACLs.
+- Cooper: tenant/subscription/grouping model.
+- Maestro: agent/session/story persistence, MCP server, architecture-knowledge
+  ontology.
 
-### `retrieval`
+Note on Morris's `internal/classify`: it is a clean, dependency-free rule engine,
+but it encodes handling *policy*. It stays in Morris by design — flagged here so
+its omission is deliberate, not an oversight.
 
-Storage-neutral retrieval contracts.
+## 8. Cross-Repo Work Requests
 
-Potential responsibilities:
+- **maestro-llms** — *no blocking work for estimation.* A
+  `middleware.TokenEstimator` already exists, but it is request-shaped
+  (`EstimateChat` / `EstimateEmbeddings` → `ratelimit.UsageUnits`, for the rate
+  limiter) with an unexported char-based core — there is no `text → int` helper to
+  reuse yet. So `maestro-cms` `chunk` consumes an injected `func(string) int`
+  defaulting to a local char/N estimate (ADR 0002). The small, non-blocking
+  follow-up is to have maestro-llms export a `text → int` helper (or a
+  tokenizer-backed one) for fidelity-consistent counts. Drafted as a standalone
+  request: [`docs/work-requests/maestro-llms-text-token-estimator.md`](work-requests/maestro-llms-text-token-estimator.md).
+- **Morris** — review the bespoke embedding interface + Vertex adapter and either
+  justify the duplication or replace it with a thin use of `llms` plus the
+  `maestro-cms` embed runner (ADR 0001).
 
-- Search request/response types.
-- Context-window retrieval.
-- Related-content query contracts.
-- Source handle and citation types.
-- Hybrid vector/lexical result fields.
+## 9. Recorded Decisions
 
-Morris has an early `internal/retrieval` scaffold, but it is too small and Morris-shaped to copy directly without redesign.
+See [`docs/adr/`](adr/README.md):
 
-### `graph`
-
-Structured knowledge graph primitives.
-
-Initial source from Maestro:
-
-- `pkg/knowledge/parser.go`
-- `pkg/knowledge/validator.go`
-- `pkg/knowledge/search.go`
-
-Potential responsibilities:
-
-- Graph representation.
-- DOT parser and renderer.
-- Validation.
-- Subgraph extraction.
-- Search term extraction.
-
-Storage-backed FTS retrieval should probably be an adapter, not core graph logic.
-
-### `store`
-
-Object-store interfaces and optional adapters.
-
-Initial source from Morris:
-
-- `internal/storage/storage.go`
-- optionally `internal/storage/gcs.go`
-
-The core interface should not document Morris-specific object path conventions.
-
-### `index`
-
-Optional indexing adapters.
-
-Likely subpackages:
-
-- `index/postgrespgvector`
-- `index/sqlitefts`
-- `index/alloydb`
-
-These should be optional. The core package should not require every consumer to pull in Postgres, SQLite, GCS, tree-sitter, and PDF dependencies unless needed.
-
-## 6. What To Extract First
-
-### Phase 1: Low-Risk Shared Primitives
-
-Extract:
-
-- Morris extraction package.
-- Morris prose chunker.
-- Maestro token counting helpers.
-- Morris embedding contracts, after deciding relationship to `maestro-llms`.
-- Morris object-store interface, cleaned of Morris-specific path docs.
-
-Deliverables:
-
-- New Go module `github.com/SnapdragonPartners/maestro-cms`.
-- Basic lint/test workflow copied from established Snapdragon repos.
-- Unit tests ported with the extracted packages.
-- Morris updated to consume the new library for extraction/chunking if feasible.
-
-### Phase 2: Content Model And Retrieval Contracts
-
-Add:
-
-- Source/version/artifact model.
-- Retrieval handle and citation contracts.
-- Context-window result types.
-- Event sink interface.
-
-Do not yet move Morris's worker or schema.
-
-### Phase 3: Graph Knowledge
-
-Evaluate moving Maestro graph primitives:
-
-- DOT parser.
-- Validator.
-- Subgraph logic.
-- Search term extraction.
-
-Keep SQLite FTS as an adapter.
-
-### Phase 4: Indexing Adapters
-
-Add storage-backed retrieval adapters once at least one application is ready to consume them.
-
-Candidate adapters:
-
-- Postgres/pgvector for Morris and Cooper.
-- SQLite FTS for Maestro.
-- AlloyDB if Cooper or Morris needs it.
-
-### Phase 5: Media
-
-Add first media-derived artifact support.
-
-Likely order:
-
-1. OCR for image/PDF images.
-2. Audio transcription.
-3. Video transcription plus keyframes.
-4. Image embeddings or multimodal indexing.
-
-## 7. What Not To Extract Yet
-
-Do not extract:
-
-- Morris ingestion worker as-is.
-- Morris document/revision schema as-is.
-- Morris classification policy.
-- Morris audit repository.
-- Cooper tenant/subscription model.
-- Maestro agent/session/story persistence.
-- Maestro MCP server implementation.
-
-These may inspire interfaces, but should not become core library code.
-
-## 8. Event And Audit Strategy
-
-The shared library should define an event sink, not an audit system.
-
-Example:
-
-```go
-type EventSink interface {
-    Emit(ctx context.Context, event Event) error
-}
-```
-
-Applications can:
-
-- Persist events.
-- Log them.
-- Drop them.
-- Feature-flag them.
-- Translate them into application audit records.
-
-This lets Morris keep strict audit semantics while Cooper can start lightweight.
-
-## 9. Revision And Version Strategy
-
-The shared library should model versions, but not enforce Morris's active-revision policy.
-
-Morris can require:
-
-- Extracted.
-- Classified.
-- Embedded.
-- Indexed.
-- Admin-confirmed.
-- Active pointer swapped.
-
-Cooper can initially require:
-
-- Extracted.
-- Embedded.
-- Indexed.
-- Published.
-
-Maestro can use versions differently for repo knowledge snapshots.
+- ADR 0001 — Consume the maestro-llms embedding interface directly.
+- ADR 0002 — Token estimation belongs in maestro-llms; no `tokens` package here.
+- ADR 0003 — Content is a single-parent provenance tree of Source + Artifacts.
+- ADR 0004 — `embed` is an orchestration runner over a pure `chunk`.
+- ADR 0005 — Defer the graph engine to v2; v1 content needs only stable IDs.
 
 ## 10. Open Questions
 
-1. Should `maestro-cms` expose embedding interfaces directly, or should it depend on a canonical `maestro-llms` embedding interface?
-2. Should GCS live in the core module or an optional adapter subpackage?
-3. Should PDF/DOCX extractors live in core despite adding dependencies, or should each format be an optional subpackage?
-4. What is the first Cooper content model: league/team/user, or generic tenant/collection/member?
-5. Should graph knowledge use DOT as a core supported format or as a Maestro-specific adapter?
-6. Which app should be the first consumer migrated to `maestro-cms`: Morris or Cooper?
-7. How aggressively should v1 preserve Morris extraction APIs versus redesigning for multi-artifact media?
+Most of the original draft's open questions are now resolved by the ADRs. What
+remains:
 
+1. **GCS adapter placement** — core `store` package with an optional `store/gcs`
+   subpackage, or a fully separate adapter module? (Leaning subpackage, guarded by
+   build/deps so core stays SDK-free.)
+2. **PDF/DOCX dependencies** — keep extractors in `extract` despite the
+   third-party deps (`dslipak/pdf`, `golang.org/x/net/html`), or isolate each
+   format as an optional subpackage? (Leaning: keep in `extract` for v1; the deps
+   are mature and the convenience is worth it.)
+3. **`embed` record shape** — exact fields of the persist-ready record (chunk text
+   + offsets + token count + vector + model ref + source/artifact ID + provenance).
+   To be pinned during Phase 1 implementation.
+4. **Chunker API** — Morris's chunker is unvalidated; expect to revise its
+   `Config`/boundary-selection surface as the first real end-to-end pipeline
+   exercises it.
+5. **First migration target** — Morris is the obvious Phase-1 consumer; confirm
+   the slice it adopts first (extraction + storage, then chunk + embed).
