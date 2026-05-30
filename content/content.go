@@ -5,7 +5,10 @@
 // content hash. See docs/adr/0003-content-as-single-parent-provenance-tree.md.
 package content
 
-import "errors"
+import (
+	"errors"
+	"maps"
+)
 
 // MediaType is an IANA media (MIME) type, for example "application/pdf",
 // "text/plain", or "image/png". It is the hinge that lets the model carry
@@ -36,7 +39,19 @@ type Source struct {
 	Raw StoreHandle
 	// Metadata is a neutral label carrier. It holds no grouping or policy
 	// semantics; those belong to the application.
+	//
+	// Metadata is a map, so although Source is otherwise value-semantic, a
+	// plain copy of a Source aliases the same Metadata map and mutations are
+	// shared. Use Clone for an independent copy. Metadata is caller-owned: the
+	// library never mutates it.
 	Metadata map[string]string
+}
+
+// Clone returns a copy of the source that shares no mutable state with the
+// receiver: its Metadata is an independent map. A nil Metadata stays nil.
+func (s Source) Clone() Source {
+	s.Metadata = maps.Clone(s.Metadata)
+	return s
 }
 
 // Artifact is something derived from a Source or another Artifact, such as
@@ -55,8 +70,21 @@ type Artifact struct {
 	// Blob locates the payload for binary artifacts. It is the alternative to
 	// Text.
 	Blob *StoreHandle
-	// Metadata is a neutral label carrier, as on Source.
+	// Metadata is a neutral label carrier, as on Source. The same aliasing
+	// caveat applies: copy with Clone for an independent Metadata map.
 	Metadata map[string]string
+}
+
+// Clone returns a copy of the artifact that shares no mutable state with the
+// receiver: its Metadata is an independent map and its Blob (if set) is an
+// independent pointer. A nil Metadata or Blob stays nil.
+func (a Artifact) Clone() Artifact {
+	a.Metadata = maps.Clone(a.Metadata)
+	if a.Blob != nil {
+		b := *a.Blob
+		a.Blob = &b
+	}
+	return a
 }
 
 // Validation errors returned by Source.Validate and Artifact.Validate.
@@ -69,9 +97,10 @@ var (
 	ErrMissingParent = errors.New("content: artifact missing DerivedFrom parent")
 )
 
-// Validate reports whether the source carries the fields the library requires:
-// an app-assigned ID and a media type. Hash and Raw are caller-owned and are
-// not checked here.
+// Validate is a structural, identity-and-provenance check only: it reports
+// whether the source carries an app-assigned ID and a media type. It is
+// deliberately not a payload or content check — Hash and Raw are caller-owned
+// and not inspected here.
 func (s Source) Validate() error {
 	if s.ID == "" {
 		return ErrMissingID
@@ -82,9 +111,14 @@ func (s Source) Validate() error {
 	return nil
 }
 
-// Validate reports whether the artifact carries the fields the library
-// requires: an app-assigned ID, a media type, and a single-parent DerivedFrom
-// link.
+// Validate is a structural, identity-and-provenance check only: it reports
+// whether the artifact carries an app-assigned ID, a media type, and a
+// single-parent DerivedFrom link. It deliberately does NOT validate the
+// payload: an artifact with neither Text nor Blob, or with both, passes. The
+// Text/Blob "alternatives" relationship is a documented convention, not an
+// invariant enforced here, because Text cannot distinguish "unset" from
+// "intentionally empty". Payload validation, if needed, belongs to the
+// producer (e.g. extract) once it defines what a well-formed artifact means.
 func (a Artifact) Validate() error {
 	if a.ID == "" {
 		return ErrMissingID
