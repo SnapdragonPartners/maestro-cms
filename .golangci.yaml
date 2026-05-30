@@ -93,8 +93,12 @@ linters-settings:
       - shadow
       - nilness
       - unusedwrite
-      - fieldalignment
       - sortslice
+    # fieldalignment is intentionally NOT enabled. Almost all of maestro-cms is
+    # public API whose struct field order is spec-sketched for readability;
+    # optimizing pointer-scan layout would reorder those fields for a micro-win.
+    # (maestro-llms reaches the same conclusion via per-file excludes; we are
+    # API-heavy enough to just leave it off.)
 
   staticcheck:
     checks: ["all"]
@@ -190,6 +194,12 @@ linters-settings:
       - wrapperFunc
       - importShadow
       - unnamedResult
+      # Content records (content.Source/Artifact) and other core types are
+      # value-semantic by design and copied freely by callers, including in
+      # value-receiver methods like Validate. hugeParam would fight that
+      # deliberate choice across the codebase, so it is disabled here once
+      # rather than via scattered nolints (same rationale as maestro-llms).
+      - hugeParam
     settings:
       captLocal:
         paramsOnly: true

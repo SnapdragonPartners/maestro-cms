@@ -297,8 +297,8 @@ its omission is deliberate, not an oversight.
   reuse yet. So `maestro-cms` `chunk` consumes an injected `func(string) int`
   defaulting to a local char/N estimate (ADR 0002). The small, non-blocking
   follow-up is to have maestro-llms export a `text → int` helper (or a
-  tokenizer-backed one) for fidelity-consistent counts. Drafted as a standalone
-  request: [`docs/work-requests/maestro-llms-text-token-estimator.md`](work-requests/maestro-llms-text-token-estimator.md).
+  tokenizer-backed one) for fidelity-consistent counts. This was handed to the
+  maestro-llms team for their next release (tracked in that repo).
 - **Morris** — review the bespoke embedding interface + Vertex adapter and either
   justify the duplication or replace it with a thin use of `llms` plus the
   `maestro-cms` embed runner (ADR 0001).
@@ -312,24 +312,32 @@ See [`docs/adr/`](adr/README.md):
 - ADR 0003 — Content is a single-parent provenance tree of Source + Artifacts.
 - ADR 0004 — `embed` is an orchestration runner over a pure `chunk`.
 - ADR 0005 — Defer the graph engine to v2; v1 content needs only stable IDs.
+- ADR 0006 — Optional adapters live in subpackages; core stays dependency-free.
 
-## 10. Open Questions
+## 10. Resolved Phase 1 Contracts
 
-Most of the original draft's open questions are now resolved by the ADRs. What
-remains:
+Decisions taken before cutting Phase 1 code, recorded so they are not
+re-litigated:
 
-1. **GCS adapter placement** — core `store` package with an optional `store/gcs`
-   subpackage, or a fully separate adapter module? (Leaning subpackage, guarded by
-   build/deps so core stays SDK-free.)
-2. **PDF/DOCX dependencies** — keep extractors in `extract` despite the
-   third-party deps (`dslipak/pdf`, `golang.org/x/net/html`), or isolate each
-   format as an optional subpackage? (Leaning: keep in `extract` for v1; the deps
-   are mature and the convenience is worth it.)
-3. **`embed` record shape** — exact fields of the persist-ready record (chunk text
-   + offsets + token count + vector + model ref + source/artifact ID + provenance).
-   To be pinned during Phase 1 implementation.
-4. **Chunker API** — Morris's chunker is unvalidated; expect to revise its
+- **Adapter isolation** (was open Q1/Q2) — optional adapters live in
+  subpackages and the core stays dependency-free: `store/gcs`, and per-format
+  `extract/pdf` / `extract/docx`. `import store` / `import extract` pull only
+  stdlib. See ADR 0006.
+- **IDs** — `Source`/`Artifact` IDs are app-assigned and opaque. The library
+  validates their presence (`Validate`) but never mints them.
+- **Content hash** — the caller owns `Source.Hash`. `extract` never computes or
+  mutates source identity; a `content.HashBytes` helper may be added later.
+- **`extract` signature** — media type is an explicit input. The shape will
+  shake out in code, roughly `Extract(ctx, mediaType, reader, parentID)
+  -> ([]Artifact, error)` plus a registry.
+- **First migration target** — Morris extraction + storage first, then chunk +
+  embed, for the fastest real feedback.
+
+## 11. Still Open
+
+1. **`embed` record shape** — Phase 1 records carry source ID, artifact ID,
+   chunk index, text, offsets, token count, vector, model ref, and a metadata
+   hook; the exact final field set is pinned when `embed` is implemented.
+2. **Chunker API** — Morris's chunker is unvalidated; expect to revise its
    `Config`/boundary-selection surface as the first real end-to-end pipeline
-   exercises it.
-5. **First migration target** — Morris is the obvious Phase-1 consumer; confirm
-   the slice it adopts first (extraction + storage, then chunk + embed).
+   exercises it. Keep the first API boring and pure.

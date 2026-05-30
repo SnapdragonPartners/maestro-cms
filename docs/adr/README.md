@@ -13,3 +13,5 @@ described in an ADR without superseding it.
   orchestration runner over a pure `chunk`.
 - [0005](0005-defer-graph-engine-to-v2.md) — Defer the graph engine to v2; v1
   content needs only stable IDs.
+- [0006](0006-optional-adapters-as-subpackages.md) — Optional adapters live in
+  subpackages; core stays dependency-free.
