@@ -1,0 +1,257 @@
+# Go linting configuration for maestro-cms.
+# Adapted from the maestro-llms config. Core packages must stay
+# provider/storage-neutral; optional adapters (store/*, index/*) may import
+# cloud SDKs and DB drivers. A depguard rule is intentionally omitted until
+# those adapter packages exist (see docs/spec-v1.md); add a core-no-adapters
+# rule when the first adapter lands.
+run:
+  timeout: 10m
+  modules-download-mode: readonly
+
+linters:
+  enable:
+    # Core formatting and imports
+    - gofmt
+    - goimports
+    - gci
+
+    # Essential checks
+    - govet
+    - typecheck
+    - staticcheck
+    - unused
+    - ineffassign
+    - misspell
+
+    # Error handling
+    - errcheck
+    - errorlint
+    - wrapcheck
+
+    # Code quality and maintainability
+    - gosimple
+    - goconst
+    - unconvert
+    - unparam
+    - revive
+    - cyclop
+    - dupl
+    - maintidx
+
+    # Security
+    - gosec
+    - bodyclose
+    - noctx
+
+    # Nil safety
+    - nilerr
+    - nilnesserr
+    - nilnil
+    - forcetypeassert
+
+    # Performance and resource management
+    - makezero
+    - prealloc
+    - containedctx
+    - contextcheck
+
+    # Best practices
+    - copyloopvar
+    - gocritic
+    - gochecknoinits
+    - gochecknoglobals
+    - gomodguard
+
+    # Style and consistency
+    - stylecheck
+    - whitespace
+    - dogsled
+    - nakedret
+    - predeclared
+
+    # Documentation
+    - godot
+
+linters-settings:
+  gci:
+    sections:
+      - standard
+      - default
+      - prefix(github.com/SnapdragonPartners/maestro-cms)
+    skip-generated: true
+
+  goconst:
+    min-len: 3
+    min-occurrences: 3
+    ignore-tests: true
+    match-constant: true
+    numbers: false
+    ignore-calls: true
+
+  govet:
+    enable:
+      - shadow
+      - nilness
+      - unusedwrite
+      - fieldalignment
+      - sortslice
+
+  staticcheck:
+    checks: ["all"]
+
+  gosec:
+    severity: medium
+    confidence: medium
+    config:
+      G302: "0644"
+      G306: "0644"
+
+  cyclop:
+    max-complexity: 15
+    package-average: 10.0
+    skip-tests: true
+
+  maintidx:
+    under: 20
+
+  dupl:
+    threshold: 100
+
+  revive:
+    severity: warning
+    rules:
+      - name: exported
+        severity: error
+        disabled: false
+      - name: unexported-return
+        severity: warning
+        disabled: false
+      - name: unused-parameter
+        severity: warning
+        disabled: false
+      - name: unreachable-code
+        severity: error
+        disabled: false
+      - name: redefines-builtin-id
+        severity: error
+        disabled: false
+      - name: superfluous-else
+        severity: warning
+        disabled: false
+      - name: var-naming
+        severity: warning
+        disabled: false
+        arguments:
+          - ["ID", "HTTP", "JSON", "API", "URI", "URL", "LLM", "AI", "OS", "TTL", "MIME", "OCR", "PDF", "DOCX", "HTML"]
+
+  contextcheck:
+    check-generated: false
+
+  wrapcheck:
+    ignoreSigs:
+      - .Errorf(
+      - errors.New(
+      - errors.Unwrap(
+      - errors.Join(
+      - .Wrap(
+      - .Wrapf(
+
+  errorlint:
+    errorf: true
+    asserts: true
+    comparison: true
+
+  unparam:
+    check-exported: false
+
+  nakedret:
+    max-func-lines: 30
+
+  dogsled:
+    max-blank-identifiers: 3
+
+  prealloc:
+    simple: true
+    range-loops: true
+    for-loops: false
+
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - experimental
+      - opinionated
+      - performance
+      - style
+    disabled-checks:
+      - dupImport
+      - ifElseChain
+      - octalLiteral
+      - whyNoLint
+      - wrapperFunc
+      - importShadow
+      - unnamedResult
+    settings:
+      captLocal:
+        paramsOnly: true
+      rangeValCopy:
+        sizeThreshold: 32
+
+  gomodguard:
+    blocked:
+      modules:
+        - github.com/pkg/errors:
+            recommendations:
+              - errors
+              - fmt
+            reason: "Use standard library errors and fmt.Errorf instead"
+      local_replace_directives: false
+
+issues:
+  exclude-use-default: false
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  new: false
+
+  exclude:
+    - "should not use dot imports"
+
+  exclude-rules:
+    # Test files - be more lenient
+    - path: "_test\\.go"
+      linters:
+        - errcheck
+        - goconst
+        - gocritic
+        - cyclop
+        - maintidx
+        - dupl
+        - gochecknoglobals
+        - gochecknoinits
+        - gosec
+        - wrapcheck
+        - prealloc
+
+    # Example test files
+    - path: "example_test\\.go"
+      linters:
+        - errcheck
+        - govet
+        - gosec
+        - unparam
+
+    # fieldalignment prioritizes memory layout over readability; skip in tests
+    - linters:
+        - govet
+      text: "fieldalignment:"
+      path: "_test\\.go"
+
+    # Deprecated-symbol usage is sometimes required for dependency compatibility
+    - linters:
+        - staticcheck
+      text: "SA1019:"
+
+  exclude-dirs:
+    - .git
+
+  exclude-files:
+    - ".*\\.pb\\.go$"

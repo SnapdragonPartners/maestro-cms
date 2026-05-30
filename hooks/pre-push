@@ -1,0 +1,5 @@
+#!/bin/sh
+# Pre-push hook: run `make build` (gofmt + golangci-lint + go build) before a push.
+# Install with: make install-hooks
+set -e
+make build
