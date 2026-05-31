@@ -169,7 +169,7 @@ type Artifact struct {
 ```
 
 ```go
-// chunk — pure; estimator injected, defaults to char/4 (ADR 0002)
+// chunk — pure; estimator injected (llms.EstimateTextTokens, v0.6.0+; char/N default) (ADR 0002)
 type Chunk struct {
     Text       string
     Index      int // 0-based position within the source artifact
@@ -183,7 +183,7 @@ type Config struct {
     OverlapTokens int
 }
 
-type Estimate func(string) int // default: local char/N; later, a maestro-llms text helper
+type Estimate func(string) int // standard: llms.EstimateTextTokens (v0.6.0+); default: local char/N
 
 func Split(text string, cfg Config, est Estimate) []Chunk
 ```
@@ -219,7 +219,7 @@ type BatchFailure struct {
 | Package    | In v1? | Shape |
 |------------|:------:|-------|
 | `extract`  | ✅ | MIME-aware extraction. Returns `[]Artifact` (multi-modal; text-only populated today). Lifted from Morris. |
-| `chunk`    | ✅ | **Pure**: `text → []Chunk`. Injected `func(string) int` estimator, char/4 default. Lifted from Morris; API unvalidated, expect revision. |
+| `chunk`    | ✅ | **Pure**: `text → []Chunk`. Injected `func(string) int` estimator — standard injection `llms.EstimateTextTokens` (v0.6.0+), local char/N default. Lifted from Morris; API unvalidated, expect revision. |
 | `content`  | ✅ | `Source` + `Artifact` + media type + single-parent provenance + stable IDs + optional neutral metadata map. New, minimal code. |
 | `embed`    | ✅ | **Runner**, not a contract: batches `[]Chunk`, preserves successful batches and reports per-batch failure diagnostics, with ID-order matching / retry / budget-aware batch sizing over `llms.EmbeddingClient`; returns persist-ready records. Optional `Pipeline` chains extract→chunk→embed. (Failure semantics: ADR 0004.) |
 | `store`    | ✅ | `Get/Put/Delete/Exists(key)` object-store interface — opaque, adapter-defined keys, **no path conventions** — plus optional GCS adapter. Clean lift from Morris. A `content.StoreHandle{Backend, Key}` names which adapter resolves a given key. |
@@ -290,15 +290,12 @@ its omission is deliberate, not an oversight.
 
 ## 8. Cross-Repo Work Requests
 
-- **maestro-llms** — *no blocking work for estimation.* A
-  `middleware.TokenEstimator` already exists, but it is request-shaped
-  (`EstimateChat` / `EstimateEmbeddings` → `ratelimit.UsageUnits`, for the rate
-  limiter) with an unexported char-based core — there is no `text → int` helper to
-  reuse yet. So `maestro-cms` `chunk` consumes an injected `func(string) int`
-  defaulting to a local char/N estimate (ADR 0002). The small, non-blocking
-  follow-up is to have maestro-llms export a `text → int` helper (or a
-  tokenizer-backed one) for fidelity-consistent counts. This was handed to the
-  maestro-llms team for their next release (tracked in that repo).
+- **maestro-llms** — *delivered.* `llms.EstimateTextTokens` shipped in
+  **v0.6.0** (their ADR-0013): a `func(string) int`, neutral ~4 chars/token,
+  rune-counted, with `llms` as the smallest possible import. It is the standard
+  injection for `chunk` (a local char/N estimate remains the zero-dependency
+  default); `chunk` itself does not import `maestro-llms`. See ADR 0002. A
+  tokenizer-backed, model-aware variant is deferred on their roadmap.
 - **Morris** — review the bespoke embedding interface + Vertex adapter and either
   justify the duplication or replace it with a thin use of `llms` plus the
   `maestro-cms` embed runner (ADR 0001).

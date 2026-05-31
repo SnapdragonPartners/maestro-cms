@@ -195,10 +195,12 @@ linters-settings:
       - importShadow
       - unnamedResult
       # Content records (content.Source/Artifact) and other core types are
-      # value-semantic by design and copied freely by callers, including in
-      # value-receiver methods like Validate. hugeParam would fight that
-      # deliberate choice across the codebase, so it is disabled here once
-      # rather than via scattered nolints (same rationale as maestro-llms).
+      # value types passed and copied by value, including in value-receiver
+      # methods like Validate. (Their Metadata maps follow normal Go map
+      # aliasing; Clone gives an independent copy — see content.go.) hugeParam
+      # would fight that deliberate choice across the codebase, so it is
+      # disabled here once rather than via scattered nolints (same rationale as
+      # maestro-llms).
       - hugeParam
     settings:
       captLocal:
