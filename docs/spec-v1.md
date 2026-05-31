@@ -218,7 +218,7 @@ type BatchFailure struct {
 
 | Package    | In v1? | Shape |
 |------------|:------:|-------|
-| `extract`  | ✅ | MIME-aware extraction. Returns `[]Artifact` (multi-modal; text-only populated today). Lifted from Morris. |
+| `extract`  | ✅ | Media-type-aware extraction: `Extractor` interface + registry + stdlib `text/plain` extractor in core. Registry canonicalizes media types, bounds input size (`WithMaxBytes`), and rejects empty `parentID`. Returns `[]content.Artifact` (multi-modal; text-only today; `DerivedFrom`=parentID, ID left for the caller). Markdown gets its own later extractor (whitespace is semantic); dependency-bearing formats (`extract/html`, `extract/pdf`, `extract/docx`) are subpackages (ADR 0006). Lifted from Morris. |
 | `chunk`    | ✅ | **Pure**: `text → []Chunk`. Injected `func(string) int` estimator — standard injection `llms.EstimateTextTokens` (v0.6.0+), local char/N default. Lifted from Morris; API unvalidated, expect revision. |
 | `content`  | ✅ | `Source` + `Artifact` + media type + single-parent provenance + stable IDs + optional neutral metadata map. New, minimal code. |
 | `embed`    | ✅ | **Runner**, not a contract: batches `[]Chunk`, preserves successful batches and reports per-batch failure diagnostics, with ID-order matching / retry / budget-aware batch sizing over `llms.EmbeddingClient`; returns persist-ready records. Optional `Pipeline` chains extract→chunk→embed. (Failure semantics: ADR 0004.) |
@@ -324,9 +324,22 @@ re-litigated:
   validates their presence (`Validate`) but never mints them.
 - **Content hash** — the caller owns `Source.Hash`. `extract` never computes or
   mutates source identity; a `content.HashBytes` helper may be added later.
-- **`extract` signature** — media type is an explicit input. The shape will
-  shake out in code, roughly `Extract(ctx, mediaType, reader, parentID)
-  -> ([]Artifact, error)` plus a registry.
+- **`extract` signature** — *implemented.* `Registry.Extract(ctx, mediaType,
+  reader, parentID, ...Option) -> ([]content.Artifact, error)`; per-format
+  extractors implement `Extract(ctx, r, parentID)`. Media type is an explicit
+  input. Returned artifacts set `DerivedFrom`=parentID and the produced
+  `MediaType`, and leave `ID` empty — the caller assigns IDs (the library never
+  mints them) before validating or persisting. Only the `text/plain` extractor
+  ships in core; Markdown gets its own later extractor (whitespace is semantic)
+  and other formats are subpackages.
+- **`extract` is MIME-aware and bounded** — the Registry canonicalizes media
+  types via stdlib `mime.ParseMediaType` (lowercased base type, parameters
+  dropped), so `text/plain`, `Text/Plain`, and `text/plain; charset=utf-8` all
+  dispatch alike; and it bounds input at `DefaultMaxBytes` (32 MiB), returning
+  `ErrSourceTooLarge` rather than truncating. Both the default and per-call limit
+  are set via `WithMaxBytes`. `Register(nil)` panics at wiring time. Extractors
+  honor `ctx` cancellation; size bounding is the Registry's responsibility, not
+  each extractor's.
 - **First migration target** — Morris extraction + storage first, then chunk +
   embed, for the fastest real feedback.
 

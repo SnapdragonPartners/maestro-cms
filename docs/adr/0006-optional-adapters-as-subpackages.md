@@ -16,10 +16,16 @@ discipline.
 
 - Adapters live in **subpackages of the same module**, not separate modules:
   `store/gcs`, `index/pgvector`, `index/sqlitefts`, and per-format extractors
-  `extract/pdf`, `extract/docx`.
+  `extract/html`, `extract/pdf`, `extract/docx`.
 - Root packages stay dependency-free: `store` is the byte interface only;
-  `extract` (when it lands) holds the `Extractor` interface, a registry, and the
-  stdlib-only text/HTML extractors, while heavy formats are opt-in subpackages.
+  `extract` holds the `Extractor` interface, a registry, and the genuinely
+  stdlib-only `text/plain` extractor, while every other format is an opt-in
+  subpackage. Markdown is excluded from core despite being stdlib-parseable:
+  its whitespace is semantic, so it needs a deliberate extractor rather than the
+  prose normalization the plain-text path applies. HTML belongs in a subpackage
+  too: it needs `golang.org/x/net/html`, which is not the standard library.
+  (DOCX is stdlib-only — `archive/zip` + `encoding/xml` — but stays a subpackage
+  anyway, so all formats are uniformly opt-in.)
 - A consumer assembles what it needs (for example, registering `extract/pdf` into
   the registry). A convenience "default bundle" may come later.
 - When the first adapter lands, add the golangci-lint depguard rule that forbids
