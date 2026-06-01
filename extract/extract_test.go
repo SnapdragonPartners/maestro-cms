@@ -203,8 +203,8 @@ func TestNormalizeWhitespace(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := normalizeWhitespace(tt.in); got != tt.want {
-				t.Fatalf("normalizeWhitespace(%q) = %q, want %q", tt.in, got, tt.want)
+			if got := NormalizeWhitespace(tt.in); got != tt.want {
+				t.Fatalf("NormalizeWhitespace(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
 	}

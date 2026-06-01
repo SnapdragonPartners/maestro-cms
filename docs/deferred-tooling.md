@@ -4,6 +4,8 @@ Repo-tooling items intentionally left out of the initial scaffolding
 (`maestro-llms` has them; we don't yet, because the trigger doesn't exist).
 Add each when its trigger lands so we don't rediscover the gap later.
 
+Status: item 1 still open; items 2 and 3 done (kept here for the audit trail).
+
 ## 1. Integration test target + workflow
 
 - **What `maestro-llms` has:** a `test-integration` Make target (OS-aware:
@@ -18,24 +20,18 @@ Add each when its trigger lands so we don't rediscover the gap later.
   At that point add the build-tagged tests, the `test-integration` target, and a
   manual-dispatch workflow; keep the default `make test` and CI network-free.
 
-## 2. golangci-lint depguard: core-must-not-import-adapters
+## 2. golangci-lint depguard: core-must-not-import-adapters — DONE
 
-- **What `maestro-llms` has:** a `depguard` rule enforcing that core packages
-  (`llms/*`, middleware, ratelimit, testllm) cannot import provider packages —
-  providers are leaf imports only apps pull in.
-- **Why deferred:** `maestro-cms` has no adapter packages yet, so there is
-  nothing to fence off. A placeholder comment marks the spot in
-  `.golangci.yaml`.
-- **Add when:** the first optional adapter package exists (`store/*`, `index/*`).
-  The rule should deny core packages (extract, chunk, content, tokens, embed,
-  retrieval) from importing `store/<adapter>` and `index/<adapter>`, so cloud
-  SDKs and DB drivers stay confined to adapters. This enforces the load-bearing
-  boundary in ADRs and `docs/spec-v1.md` (core stays provider/storage-neutral).
+- **Done:** landed with the first adapter subpackage (`extract/html`). The
+  `depguard` `core-no-adapters` rule in `.golangci.yaml` denies core packages
+  (`content`, `chunk`, root `extract`, root `store`) from importing the adapter
+  subpackages (`extract/html|pdf|docx`, `store/gcs`, `index/*`); `_test` files
+  are exempt. Verified to fire (a `store -> extract/html` import is rejected) and
+  to pass on real code. Enforces the ADR 0006 boundary.
 
-## 3. (note) maestro-llms text-token-estimator work request
+## 3. maestro-llms text-token-estimator — DELIVERED
 
-Tracked by the `maestro-llms` team for their next release (handed off, not in
-this repo). Relevant here only as the dependency behind
-[ADR 0002](adr/0002-token-estimation-belongs-in-maestro-llms.md): until they
-expose a `text -> int` helper, `chunk` uses an injected `func(string) int` with a
-local char/N default.
+`llms.EstimateTextTokens` shipped in maestro-llms v0.6.0 (neutral ~4 chars/token,
+rune-counted). The `chunk` package consumes an injected `func(string) int`
+(standard injection `llms.EstimateTextTokens`; local rune-counted char/4
+default). See [ADR 0002](adr/0002-token-estimation-belongs-in-maestro-llms.md).

@@ -28,9 +28,10 @@ discipline.
   anyway, so all formats are uniformly opt-in.)
 - A consumer assembles what it needs (for example, registering `extract/pdf` into
   the registry). A convenience "default bundle" may come later.
-- When the first adapter lands, add the golangci-lint depguard rule that forbids
-  core packages from importing adapter subpackages (tracked in
-  [docs/deferred-tooling.md](../deferred-tooling.md)).
+- A golangci-lint depguard `core-no-adapters` rule forbids core packages
+  (`content`, `chunk`, root `extract`, root `store`) from importing adapter
+  subpackages (`extract/html|pdf|docx`, `store/gcs`, `index/*`). It landed with
+  the first adapter (`extract/html`).
 
 ## Consequences
 

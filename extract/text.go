@@ -34,7 +34,7 @@ func NewTextExtractor() *TextExtractor {
 // replaced with U+FFFD. It returns ErrNoContent if the input normalizes to the
 // empty string.
 func (TextExtractor) Extract(ctx context.Context, r io.Reader, parentID string) ([]content.Artifact, error) {
-	data, err := readAll(ctx, r)
+	data, err := ReadAll(ctx, r)
 	if err != nil {
 		return nil, err
 	}
@@ -44,9 +44,9 @@ func (TextExtractor) Extract(ctx context.Context, r io.Reader, parentID string) 
 		text = strings.ToValidUTF8(text, "�")
 	}
 
-	normalized := normalizeWhitespace(text)
+	normalized := NormalizeWhitespace(text)
 	if normalized == "" {
 		return nil, ErrNoContent
 	}
-	return []content.Artifact{textArtifact(parentID, normalized)}, nil
+	return []content.Artifact{TextArtifact(parentID, normalized)}, nil
 }

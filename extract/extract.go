@@ -65,7 +65,32 @@ var (
 	// It is matched with errors.Is; the concrete error carries the limit (see
 	// SourceTooLargeError) for diagnostics.
 	ErrSourceTooLarge = errors.New("extract: source exceeds size limit")
+	// ErrMalformedSource indicates a format extractor could not parse the source
+	// (corrupt PDF, unzippable DOCX, and so on). It is matched with errors.Is;
+	// the concrete error carries the media type and cause (see
+	// MalformedSourceError).
+	ErrMalformedSource = errors.New("extract: malformed source")
 )
+
+// MalformedSourceError reports that a format extractor failed to parse a source,
+// carrying the media type and underlying cause. It satisfies
+// errors.Is(err, ErrMalformedSource) and unwraps to the cause. Format
+// subpackages (extract/html, extract/pdf, …) return it for parser-level
+// failures, distinct from ErrNoContent (a clean parse that yielded no text).
+type MalformedSourceError struct {
+	MediaType content.MediaType
+	Err       error
+}
+
+func (e *MalformedSourceError) Error() string {
+	return fmt.Sprintf("extract: malformed %s source: %v", e.MediaType, e.Err)
+}
+
+// Is reports a match against the ErrMalformedSource sentinel.
+func (e *MalformedSourceError) Is(target error) bool { return target == ErrMalformedSource }
+
+// Unwrap returns the underlying parser error.
+func (e *MalformedSourceError) Unwrap() error { return e.Err }
 
 // SourceTooLargeError reports that a source exceeded the byte limit, carrying the
 // limit that was applied. It satisfies errors.Is(err, ErrSourceTooLarge).
@@ -221,9 +246,11 @@ func (r *Registry) Extract(ctx context.Context, mediaType content.MediaType, rea
 	return e.Extract(ctx, reader, parentID) //nolint:wrapcheck // pure dispatch; error is already package-local
 }
 
-// textArtifact builds a single text artifact derived from parentID. ID is left
-// empty for the caller to assign.
-func textArtifact(parentID, text string) content.Artifact {
+// TextArtifact builds a single text/plain artifact derived from parentID, with
+// ID left empty for the caller to assign. It is exported for use by extractor
+// subpackages (extract/html, extract/pdf, …) so they emit artifacts in the same
+// shape as the core text extractor.
+func TextArtifact(parentID, text string) content.Artifact {
 	return content.Artifact{
 		MediaType:   MediaTypeText,
 		DerivedFrom: parentID,
@@ -231,10 +258,11 @@ func textArtifact(parentID, text string) content.Artifact {
 	}
 }
 
-// normalizeWhitespace trims each line and collapses runs of blank lines into a
+// NormalizeWhitespace trims each line and collapses runs of blank lines into a
 // single blank line, then trims the whole result. It preserves paragraph
-// structure while removing incidental whitespace.
-func normalizeWhitespace(s string) string {
+// structure while removing incidental whitespace. It is exported so extractor
+// subpackages produce uniformly-shaped text.
+func NormalizeWhitespace(s string) string {
 	lines := strings.Split(s, "\n")
 	out := make([]string, 0, len(lines))
 	blanks := 0
@@ -253,9 +281,11 @@ func normalizeWhitespace(s string) string {
 	return strings.TrimSpace(strings.Join(out, "\n"))
 }
 
-// readAll buffers r into memory, honoring ctx cancellation. Size bounding is the
-// Registry's job (it wraps r in a limitReader), so readAll itself imposes no cap.
-func readAll(ctx context.Context, r io.Reader) ([]byte, error) {
+// ReadAll buffers r into memory, honoring ctx cancellation. Size bounding is the
+// Registry's job (it wraps r in a limitReader), so ReadAll itself imposes no cap.
+// It is exported for extractor subpackages, which buffer the source before
+// handing it to a format parser (HTML, PDF, DOCX all need the whole input).
+func ReadAll(ctx context.Context, r io.Reader) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("extract: read aborted: %w", err)
 	}
