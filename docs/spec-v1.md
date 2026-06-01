@@ -219,7 +219,7 @@ type BatchFailure struct {
 | Package    | In v1? | Shape |
 |------------|:------:|-------|
 | `extract`  | ✅ | Media-type-aware extraction: `Extractor` interface + registry + stdlib `text/plain` extractor in core. Registry canonicalizes media types, bounds input size (`WithMaxBytes`), and rejects empty `parentID`. Returns `[]content.Artifact` (multi-modal; text-only today; `DerivedFrom`=parentID, ID left for the caller). Markdown gets its own later extractor (whitespace is semantic); dependency-bearing formats (`extract/html`, `extract/pdf`, `extract/docx`) are subpackages (ADR 0006). Lifted from Morris. |
-| `chunk`    | ✅ | **Pure**: `text → []Chunk`. Injected `func(string) int` estimator — standard injection `llms.EstimateTextTokens` (v0.6.0+), local char/N default. Lifted from Morris; API unvalidated, expect revision. |
+| `chunk`    | ✅ | **Pure, boundary-aware**: segments at semantic boundaries (`Paragraphs` default; pluggable `Boundaries` for headings/pages/sections/code/transcripts/caller units), packs units to a token budget, and hard-splits an oversize unit only as a last resort. Token estimation is a budget *constraint*, not the strategy: injected `func(string) int` — standard injection `llms.EstimateTextTokens` (v0.6.0+), local rune-counted char/4 default. Imports no `maestro-llms`. |
 | `content`  | ✅ | `Source` + `Artifact` + media type + single-parent provenance + stable IDs + optional neutral metadata map. New, minimal code. |
 | `embed`    | ✅ | **Runner**, not a contract: batches `[]Chunk`, preserves successful batches and reports per-batch failure diagnostics, with ID-order matching / retry / budget-aware batch sizing over `llms.EmbeddingClient`; returns persist-ready records. Optional `Pipeline` chains extract→chunk→embed. (Failure semantics: ADR 0004.) |
 | `store`    | ✅ | `Get/Put/Delete/Exists(key)` object-store interface — opaque, adapter-defined keys, **no path conventions** — plus optional GCS adapter. Clean lift from Morris. A `content.StoreHandle{Backend, Key}` names which adapter resolves a given key. |
@@ -348,6 +348,7 @@ re-litigated:
 1. **`embed` record shape** — Phase 1 records carry source ID, artifact ID,
    chunk index, text, offsets, token count, vector, model ref, and a metadata
    hook; the exact final field set is pinned when `embed` is implemented.
-2. **Chunker API** — Morris's chunker is unvalidated; expect to revise its
-   `Config`/boundary-selection surface as the first real end-to-end pipeline
-   exercises it. Keep the first API boring and pure.
+2. **Chunker API** — implemented boundary-first (paragraphs + pluggable
+   `Boundaries`, token budget as a constraint). Still treat as unvalidated: the
+   set of built-in segmenters (only `Paragraphs` today) and the overlap model
+   may revise as code/transcript/section consumers exercise it. Keep it pure.
