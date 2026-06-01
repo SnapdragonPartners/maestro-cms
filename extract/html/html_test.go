@@ -14,7 +14,8 @@ import (
 var _ extract.Extractor = html.Extractor{}
 
 func TestExtractVisibleText(t *testing.T) {
-	const doc = `<!DOCTYPE html><html><head><title>T</title>
+	const doc = `<!DOCTYPE html><html><head><title>PAGETITLE</title>
+		<meta name="description" content="METADESC">
 		<style>.x{color:red}</style></head>
 		<body><h1>Hello</h1><p>world <b>bold</b></p>
 		<script>var noise = "should not appear";</script></body></html>`
@@ -40,10 +41,43 @@ func TestExtractVisibleText(t *testing.T) {
 			t.Fatalf("text missing %q: %q", want, a.Text)
 		}
 	}
-	for _, unwanted := range []string{"should not appear", "color:red", "var noise"} {
+	// Non-visible head content (title, meta), CSS, and scripts must be excluded.
+	for _, unwanted := range []string{"PAGETITLE", "METADESC", "should not appear", "color:red", "var noise"} {
 		if strings.Contains(a.Text, unwanted) {
-			t.Fatalf("text contains script/style content %q: %q", unwanted, a.Text)
+			t.Fatalf("text contains non-visible content %q: %q", unwanted, a.Text)
 		}
+	}
+}
+
+// Block-level elements must become paragraph boundaries so the boundary-aware
+// chunker sees structure rather than one flat line.
+func TestExtractPreservesBlockStructure(t *testing.T) {
+	const doc = `<h1>Title</h1><p>First para.</p><p>Second para.</p>`
+	arts, err := html.New().Extract(context.Background(), strings.NewReader(doc), "s")
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	text := arts[0].Text
+	// Each block is separated by a blank line.
+	for _, want := range []string{"Title\n\nFirst para.", "First para.\n\nSecond para."} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("block structure not preserved: missing %q in %q", want, text)
+		}
+	}
+	// Minified input (no whitespace between tags) must still split into 3 units.
+	if got := strings.Count(text, "\n\n"); got < 2 {
+		t.Fatalf("expected >=2 paragraph breaks, got %d in %q", got, text)
+	}
+}
+
+// <br> is a line break, not a paragraph break.
+func TestExtractBrIsLineBreak(t *testing.T) {
+	arts, err := html.New().Extract(context.Background(), strings.NewReader("<p>line one<br>line two</p>"), "s")
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if !strings.Contains(arts[0].Text, "line one\nline two") {
+		t.Fatalf("br did not produce a line break: %q", arts[0].Text)
 	}
 }
 
