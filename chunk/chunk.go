@@ -127,16 +127,14 @@ func (c *Config) boundaries() Boundaries {
 
 // defaultEstimate is the rune-counted fallback token estimator (~4 chars/token).
 // It counts runes, not bytes, so non-Latin scripts are not systematically
-// over-counted — matching the bias of maestro-llms's llms.EstimateTextTokens.
+// over-counted, and it ceiling-divides to match maestro-llms's
+// llms.EstimateTextTokens (so e.g. 5 runes estimate as 2 tokens, not 1) — the
+// default and the standard injected estimator stay aligned.
 func defaultEstimate(s string) int {
 	if s == "" {
 		return 0
 	}
-	n := utf8.RuneCountInString(s) / approxCharsPerToken
-	if n < 1 {
-		return 1
-	}
-	return n
+	return (utf8.RuneCountInString(s) + approxCharsPerToken - 1) / approxCharsPerToken
 }
 
 // Split segments text into semantic units (via cfg.Boundaries), then packs
@@ -144,11 +142,17 @@ func defaultEstimate(s string) int {
 // of trailing overlap. A single unit larger than the budget is hard-split as a
 // last resort. Input is trimmed first; empty or whitespace-only input yields no
 // chunks (nil).
-func Split(text string, cfg Config) []Chunk {
-	text = strings.TrimSpace(text)
-	if text == "" {
+func Split(source string, cfg Config) []Chunk {
+	trimmed := strings.TrimSpace(source)
+	if trimmed == "" {
 		return nil
 	}
+	// Work on the trimmed view internally, but report byte offsets into the
+	// caller's original source so the Chunk contract Text == source[StartByte:
+	// EndByte] holds even when source has leading/trailing whitespace. off is the
+	// byte length of the leading whitespace that TrimSpace removed.
+	off := len(source) - len(strings.TrimLeftFunc(source, unicode.IsSpace))
+	text := source[off : off+len(trimmed)]
 
 	est := cfg.estimate()
 	maxTok := cfg.maxTokens()
@@ -191,6 +195,14 @@ func Split(text string, cfg Config) []Chunk {
 		}
 		i = overlapStart(unitTok, i, j, overlapTok)
 	}
+
+	// Shift text-relative spans back into the caller's source coordinates.
+	if off > 0 {
+		for k := range chunks {
+			chunks[k].StartByte += off
+			chunks[k].EndByte += off
+		}
+	}
 	return chunks
 }
 
@@ -208,20 +220,18 @@ func growChunk(unitTok []int, i, maxTok int) (j, sum int) {
 }
 
 // overlapStart returns the starting unit index for the chunk after one covering
-// units [i, j]. With overlap enabled it walks back from j, re-including whole
-// trailing units up to the overlap budget, but always makes forward progress
-// (the result is strictly greater than i).
+// units [i, j]. With overlap enabled it walks back from j+1, re-including a
+// trailing unit only while adding it keeps the overlap within budget — so a unit
+// larger than the overlap budget is never duplicated into the next chunk. It
+// always makes forward progress (the result is strictly greater than i).
 func overlapStart(unitTok []int, i, j, overlapTok int) int {
 	if overlapTok <= 0 {
 		return j + 1
 	}
-	ov, ovSum := j, unitTok[j]
+	ov, ovSum := j+1, 0
 	for ov-1 > i && ovSum+unitTok[ov-1] <= overlapTok {
 		ov--
 		ovSum += unitTok[ov]
-	}
-	if ov <= i {
-		return i + 1
 	}
 	return ov
 }

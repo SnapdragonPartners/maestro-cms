@@ -186,6 +186,64 @@ func TestDefaultEstimateRuneCounted(t *testing.T) {
 	if got := defaultEstimate(""); got != 0 {
 		t.Fatalf("defaultEstimate(empty) = %d, want 0", got)
 	}
+	// Ceiling division, matching llms.EstimateTextTokens: 5 runes → 2, not 1.
+	if got := defaultEstimate("abcde"); got != 2 {
+		t.Fatalf("defaultEstimate(5 runes) = %d, want 2 (ceiling div)", got)
+	}
+	if got := defaultEstimate("a"); got != 1 {
+		t.Fatalf("defaultEstimate(1 rune) = %d, want 1", got)
+	}
+}
+
+// P1: offsets must index the caller's source, not a trimmed copy, when the
+// source has leading/trailing whitespace.
+func TestSplitOffsetsIndexOriginalSource(t *testing.T) {
+	source := "   hello world   "
+	chunks := Split(source, Config{MaxTokens: 512})
+	if len(chunks) != 1 {
+		t.Fatalf("got %d chunks, want 1", len(chunks))
+	}
+	c := chunks[0]
+	if got := source[c.StartByte:c.EndByte]; got != c.Text {
+		t.Fatalf("contract broken: source[%d:%d] = %q, Text = %q", c.StartByte, c.EndByte, got, c.Text)
+	}
+	if c.StartByte != 3 {
+		t.Fatalf("StartByte = %d, want 3 (after leading spaces)", c.StartByte)
+	}
+}
+
+// P1 with multiple chunks and leading whitespace: every chunk's offsets must
+// index the original source.
+func TestSplitOffsetsWithLeadingWhitespaceMultiChunk(t *testing.T) {
+	source := "\n\n  " + strings.Join([]string{"alpha", "bravo", "charlie", "delta"}, "\n\n") + "  \n"
+	chunks := Split(source, Config{MaxTokens: 4, NoOverlap: true})
+	assertChunksInvariants(t, source, chunks) // checks source[Start:End] == Text for each
+	if len(chunks) < 2 {
+		t.Fatalf("expected multiple chunks, got %d", len(chunks))
+	}
+}
+
+// P3: a packed unit larger than the overlap budget must not be duplicated into
+// the next chunk.
+func TestSplitOverlapDoesNotDuplicateOversizeUnit(t *testing.T) {
+	// Units roughly [1, big, 1] tokens. With a small overlap budget, the big
+	// middle unit must not reappear in the following chunk.
+	small := "x"
+	big := strings.TrimSpace(strings.Repeat("word ", 200)) // ~250 tokens
+	source := small + "\n\n" + big + "\n\n" + small
+	chunks := Split(source, Config{MaxTokens: 300, OverlapTokens: 2})
+	assertChunksInvariants(t, source, chunks)
+	// The big unit's byte range should appear in exactly one chunk.
+	bigStart := strings.Index(source, big)
+	covering := 0
+	for _, c := range chunks {
+		if c.StartByte <= bigStart && bigStart < c.EndByte {
+			covering++
+		}
+	}
+	if covering != 1 {
+		t.Fatalf("oversize unit covered by %d chunks, want 1 (no duplication)", covering)
+	}
 }
 
 func TestSplitCustomBoundaries(t *testing.T) {
@@ -249,10 +307,13 @@ func TestSplitOverlapClampsToForwardProgress(t *testing.T) {
 		paras[i] = "tiny"
 	}
 	in := strings.Join(paras, "\n\n")
-	// Budget packs ~most paragraphs; overlap budget bigger than the packed span
-	// would, unclamped, restart at the same unit.
-	chunks := Split(in, Config{MaxTokens: 6, OverlapTokens: 100})
+	// Small budget so packing stops mid-list and overlapStart runs; the large
+	// overlap budget would, unclamped, restart at the same unit and stall.
+	chunks := Split(in, Config{MaxTokens: 2, OverlapTokens: 100})
 	assertChunksInvariants(t, in, chunks)
+	if len(chunks) < 2 {
+		t.Fatalf("expected multiple chunks, got %d", len(chunks))
+	}
 }
 
 // CJK input with a tiny budget forces snapEndToRuneBoundary's forward-extension
