@@ -6,7 +6,7 @@ import (
 	"unicode/utf8"
 )
 
-// assertChunksCoverAndAlign verifies the core invariants every Split result must
+// assertChunksInvariants verifies the core invariants every Split result must
 // satisfy: text matches its byte offsets, offsets are within range and rune
 // aligned, indices are sequential, and chunks advance.
 func assertChunksInvariants(t *testing.T, source string, chunks []Chunk) {
@@ -53,8 +53,8 @@ func TestSplitSmallInputIsSingleChunk(t *testing.T) {
 // Boundary-first: paragraphs are packed up to budget, and a chunk boundary
 // should fall on a paragraph break, not mid-paragraph.
 func TestSplitPacksParagraphsToBudget(t *testing.T) {
-	// 4 paragraphs, ~10 tokens each under the default estimator. Budget of ~22
-	// tokens should pack 2 paragraphs per chunk.
+	// 4 paragraphs of ~20 tokens each under the default estimator. A 45-token
+	// budget should pack 2 paragraphs per chunk.
 	p := func(n int) string { return strings.Repeat("word ", n) } // 5*n chars ≈ (5n/4) tokens
 	para := strings.TrimSpace(p(16))                              // ~20 tokens
 	in := para + "\n\n" + para + "\n\n" + para + "\n\n" + para
@@ -171,6 +171,92 @@ func TestParagraphsCoverText(t *testing.T) {
 		if units[i].Start != units[i-1].End {
 			t.Fatalf("gap/overlap between unit %d and %d: %+v", i-1, i, units)
 		}
+	}
+}
+
+// #5: Windows (\r\n\r\n) and mixed blank lines must split into paragraphs, not
+// be treated as one giant paragraph.
+func TestParagraphsCRLF(t *testing.T) {
+	for _, in := range []string{
+		"first\r\n\r\nsecond\r\n\r\nthird",
+		"first\r\n\nsecond\n\r\nthird", // mixed endings
+	} {
+		units := Paragraphs(in)
+		if len(units) != 3 {
+			t.Fatalf("Paragraphs(%q) = %d units, want 3", in, len(units))
+		}
+		if units[0].Start != 0 || units[len(units)-1].End != len(in) {
+			t.Fatalf("units do not cover text: %+v for %q", units, in)
+		}
+		for i := 1; i < len(units); i++ {
+			if units[i].Start != units[i-1].End {
+				t.Fatalf("gap/overlap in %q: %+v", in, units)
+			}
+		}
+	}
+}
+
+// #5 via Split: CRLF text packs as separate paragraphs under a small budget.
+func TestSplitCRLFParagraphs(t *testing.T) {
+	in := "alpha alpha\r\n\r\nbravo bravo\r\n\r\ncharlie charlie\r\n\r\ndelta delta"
+	chunks := Split(in, Config{MaxTokens: 6, NoOverlap: true})
+	assertChunksInvariants(t, in, chunks)
+	if len(chunks) < 2 {
+		t.Fatalf("CRLF text was not split into multiple chunks: got %d", len(chunks))
+	}
+}
+
+// #4: a custom Boundaries that returns invalid spans must fall back to a single
+// whole-text unit rather than panic or slice on bad structure.
+func TestSplitInvalidBoundariesFallBackToWholeText(t *testing.T) {
+	in := "alpha bravo charlie delta echo foxtrot"
+	bad := []Boundaries{
+		func(string) []Unit { return []Unit{{Start: 0, End: 1000}} },                  // End out of range
+		func(string) []Unit { return []Unit{{Start: 5, End: 3}} },                     // Start >= End
+		func(string) []Unit { return []Unit{{Start: -1, End: 4}} },                    // negative Start
+		func(string) []Unit { return []Unit{{Start: 0, End: 4}, {Start: 2, End: 8}} }, // overlapping
+		func(string) []Unit { return nil },                                            // empty
+	}
+	for i, b := range bad {
+		chunks := Split(in, Config{MaxTokens: 512, Boundaries: b})
+		assertChunksInvariants(t, in, chunks)
+		if len(chunks) != 1 || chunks[0].Text != in {
+			t.Fatalf("bad boundaries #%d: expected single whole-text chunk, got %d chunks", i, len(chunks))
+		}
+	}
+}
+
+// #4: an invalid span that is in range but not rune-aligned must also fall back.
+func TestSplitNonRuneAlignedBoundariesFallBack(t *testing.T) {
+	in := "語語語" // 3 bytes each; offset 1 and 2 are mid-rune
+	mid := func(string) []Unit { return []Unit{{Start: 0, End: 1}, {Start: 1, End: 9}} }
+	chunks := Split(in, Config{MaxTokens: 512, Boundaries: mid})
+	assertChunksInvariants(t, in, chunks)
+	if len(chunks) != 1 || chunks[0].Text != in {
+		t.Fatalf("non-rune-aligned boundaries should fall back to whole text, got %d chunks", len(chunks))
+	}
+}
+
+func TestValidUnits(t *testing.T) {
+	text := "alpha bravo charlie" // ASCII, all offsets rune-aligned
+	cases := []struct {
+		name  string
+		units []Unit
+		want  bool
+	}{
+		{"valid contiguous", []Unit{{0, 6}, {6, 12}, {12, 19}}, true},
+		{"valid with gap", []Unit{{0, 5}, {6, 11}}, true},
+		{"empty", nil, false},
+		{"start>=end", []Unit{{3, 3}}, false},
+		{"out of range", []Unit{{0, 99}}, false},
+		{"overlap", []Unit{{0, 7}, {5, 12}}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := validUnits(text, c.units); got != c.want {
+				t.Fatalf("validUnits(%+v) = %v, want %v", c.units, got, c.want)
+			}
+		})
 	}
 }
 

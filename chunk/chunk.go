@@ -159,7 +159,12 @@ func Split(source string, cfg Config) []Chunk {
 	overlapTok := cfg.overlapTokens()
 
 	units := cfg.boundaries()(text)
-	if len(units) == 0 {
+	if !validUnits(text, units) {
+		// Fail closed but non-panicky: a custom Boundaries that returns invalid
+		// spans (out of range, mis-ordered, overlapping, or not rune-aligned)
+		// falls back to one unit covering the whole text rather than slicing on
+		// bad structure. This keeps Split panic-free and deterministic without
+		// silently using partially-broken segmentation.
 		units = []Unit{{Start: 0, End: len(text)}}
 	}
 	unitTok := make([]int, len(units))
@@ -278,10 +283,43 @@ func hardSplit(text string, start, end, maxTok, overlapTok int, est Estimate, ch
 	}
 }
 
-// Paragraphs segments text into paragraph units, splitting on blank-line runs
-// ("\n\n" or longer). Each unit is a contiguous byte span that includes its
-// trailing newline run, so the units cover the whole text without gaps. It is
-// the default Boundaries.
+// validUnits reports whether units form a valid segmentation of text: each span
+// is within range with Start < End, both ends land on UTF-8 rune boundaries, and
+// the units are strictly ascending and non-overlapping. An empty slice is
+// invalid (Split substitutes a whole-text unit). Gaps between units are
+// tolerated — units need not be perfectly contiguous — so a segmenter that drops
+// separators is still accepted.
+func validUnits(text string, units []Unit) bool {
+	if len(units) == 0 {
+		return false
+	}
+	prevEnd := 0
+	for _, u := range units {
+		if u.Start < 0 || u.Start >= u.End || u.End > len(text) {
+			return false
+		}
+		if u.Start < prevEnd {
+			return false // overlapping or out of order
+		}
+		if !runeAligned(text, u.Start) || !runeAligned(text, u.End) {
+			return false
+		}
+		prevEnd = u.End
+	}
+	return true
+}
+
+// runeAligned reports whether byte offset i is a UTF-8 rune boundary in text.
+// The ends of the string are boundaries.
+func runeAligned(text string, i int) bool {
+	return i == 0 || i == len(text) || utf8.RuneStart(text[i])
+}
+
+// Paragraphs segments text into paragraph units, splitting on blank-line runs. A
+// blank-line separator is a run of two or more newlines, where each newline may
+// be "\n" or "\r\n" — so "\n\n", "\r\n\r\n", and mixed line endings all split.
+// Each unit is a contiguous byte span that includes its trailing separator, so
+// the units cover the whole text without gaps. It is the default Boundaries.
 func Paragraphs(text string) []Unit {
 	if text == "" {
 		return nil
@@ -289,20 +327,55 @@ func Paragraphs(text string) []Unit {
 	var units []Unit
 	start := 0
 	for start < len(text) {
-		rel := strings.Index(text[start:], "\n\n")
-		if rel < 0 {
+		sep, runEnd := nextBlankLine(text, start)
+		if sep < 0 {
 			units = append(units, Unit{Start: start, End: len(text)})
 			break
-		}
-		sep := start + rel
-		runEnd := sep + 2
-		for runEnd < len(text) && text[runEnd] == '\n' {
-			runEnd++
 		}
 		units = append(units, Unit{Start: start, End: runEnd})
 		start = runEnd
 	}
 	return units
+}
+
+// nextBlankLine finds the next blank-line separator in text at or after pos. A
+// separator is a run of two or more consecutive newlines, where each newline is
+// "\n" optionally preceded by "\r". It returns the byte index where the run
+// begins (sep) and where it ends (runEnd, exclusive), or (-1, -1) if none. The
+// run is greedy: it absorbs every consecutive line break so the whole blank gap
+// stays with the preceding paragraph.
+func nextBlankLine(text string, pos int) (sep, runEnd int) {
+	for i := pos; i < len(text); i++ {
+		if text[i] != '\n' {
+			continue
+		}
+		// Count consecutive newlines starting at i, tolerating a "\r" before each.
+		end := i
+		count := 0
+		for end < len(text) {
+			j := end
+			if j < len(text) && text[j] == '\r' {
+				j++
+			}
+			if j < len(text) && text[j] == '\n' {
+				count++
+				end = j + 1
+				continue
+			}
+			break
+		}
+		if count >= 2 {
+			// sep is the start of the run: back up over a leading "\r" if present.
+			s := i
+			if s > pos && text[s-1] == '\r' {
+				s--
+			}
+			return s, end
+		}
+		// Not a blank line; skip past this single newline run.
+		i = end - 1
+	}
+	return -1, -1
 }
 
 // snapEndToRuneBoundary returns an end in (start, idealEnd] on a UTF-8 rune
