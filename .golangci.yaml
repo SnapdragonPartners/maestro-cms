@@ -61,6 +61,7 @@ linters:
     - gochecknoinits
     - gochecknoglobals
     - gomodguard
+    - depguard
 
     # Style and consistency
     - stylecheck
@@ -159,6 +160,14 @@ linters-settings:
       - errors.Join(
       - .Wrap(
       - .Wrapf(
+    ignorePackageGlobs:
+      # The core extract package returns already-classified sentinels
+      # (ErrSourceTooLarge, ErrNoContent, ErrMalformedSource) and ctx errors that
+      # its format subpackages (extract/html, extract/pdf, …) must pass through
+      # verbatim so callers' errors.Is checks work. Re-wrapping at the subpackage
+      # boundary would defeat that, so shared helpers like extract.ReadAll are
+      # exempt here rather than via scattered nolints.
+      - github.com/SnapdragonPartners/maestro-cms/extract
 
   errorlint:
     errorf: true
@@ -218,6 +227,33 @@ linters-settings:
             reason: "Use standard library errors and fmt.Errorf instead"
       local_replace_directives: false
 
+  # Enforce the load-bearing boundary from ADR 0006: core packages stay
+  # provider/storage-neutral and must not import the optional adapter
+  # subpackages that carry heavy third-party deps. Adapters may import core, and
+  # applications wire adapters together — but core never reaches "up" into them.
+  # The file globs target root-level package files only ("**/extract/*.go"
+  # matches the extract package, not extract/html/*.go), and _test files are
+  # exempt below so adapter tests can still import their own packages.
+  depguard:
+    rules:
+      core-no-adapters:
+        files:
+          - "**/content/*.go"
+          - "**/chunk/*.go"
+          - "**/extract/*.go"
+          - "**/store/*.go"
+        deny:
+          - pkg: "github.com/SnapdragonPartners/maestro-cms/extract/html"
+            desc: "core must not import format-adapter subpackages (ADR 0006); applications wire adapters in"
+          - pkg: "github.com/SnapdragonPartners/maestro-cms/extract/pdf"
+            desc: "core must not import format-adapter subpackages (ADR 0006); applications wire adapters in"
+          - pkg: "github.com/SnapdragonPartners/maestro-cms/extract/docx"
+            desc: "core must not import format-adapter subpackages (ADR 0006); applications wire adapters in"
+          - pkg: "github.com/SnapdragonPartners/maestro-cms/store/gcs"
+            desc: "core must not import storage-adapter subpackages (ADR 0006); applications wire adapters in"
+          - pkg: "github.com/SnapdragonPartners/maestro-cms/index"
+            desc: "core must not import index-adapter subpackages (ADR 0006); applications wire adapters in"
+
 issues:
   exclude-use-default: false
   max-issues-per-linter: 0
@@ -242,6 +278,7 @@ issues:
         - gosec
         - wrapcheck
         - prealloc
+        - depguard
 
     # Example test files
     - path: "example_test\\.go"
