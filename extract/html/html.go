@@ -16,6 +16,7 @@
 package html
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"strings"
@@ -46,7 +47,8 @@ func (Extractor) Extract(ctx context.Context, r io.Reader, parentID string) ([]c
 		return nil, err
 	}
 
-	doc, err := html.Parse(strings.NewReader(string(data)))
+	// bytes.NewReader avoids copying the buffered source into a string.
+	doc, err := html.Parse(bytes.NewReader(data))
 	if err != nil {
 		// html.Parse rarely hard-errors (it tolerates most input); treat a real
 		// failure as malformed source rather than no content.
@@ -73,7 +75,10 @@ func (Extractor) Extract(ctx context.Context, r io.Reader, parentID string) ([]c
 //     of one flat line; <br> emits a single line break. NormalizeWhitespace
 //     collapses the resulting blank-line runs.
 //   - A space follows each text node so inline-element text ("<b>Hello</b>world")
-//     does not fuse.
+//     does not fuse. (NormalizeWhitespace then trims line edges and collapses
+//     blank-line runs; it does not collapse runs of spaces within a line, so
+//     incidental double spaces between inline elements may remain — harmless for
+//     downstream embedding and chunking.)
 func collectText(n *html.Node, b *strings.Builder) {
 	if n.Type == html.ElementNode {
 		switch {
