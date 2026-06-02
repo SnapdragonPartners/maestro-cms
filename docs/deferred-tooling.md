@@ -4,7 +4,7 @@ Repo-tooling items intentionally left out of the initial scaffolding
 (`maestro-llms` has them; we don't yet, because the trigger doesn't exist).
 Add each when its trigger lands so we don't rediscover the gap later.
 
-Status: item 1 still open; items 2 and 3 done (kept here for the audit trail).
+Status: items 1 and 4 open; items 2 and 3 done (kept here for the audit trail).
 
 ## 1. Integration test target + workflow
 
@@ -35,3 +35,19 @@ Status: item 1 still open; items 2 and 3 done (kept here for the audit trail).
 rune-counted). The `chunk` package consumes an injected `func(string) int`
 (standard injection `llms.EstimateTextTokens`; local rune-counted char/4
 default). See [ADR 0002](adr/0002-token-estimation-belongs-in-maestro-llms.md).
+
+## 4. PDF parser spike — OPEN (queued)
+
+- **Why:** `github.com/dslipak/pdf` can HANG (not just panic) on some inputs — a
+  page with no `/Contents` stream makes `GetPlainText` spin without returning.
+  `recover()` cannot catch it and it ignores `context`, so it is a DoS vector for
+  untrusted PDFs. `extract/pdf` ships a wall-clock **timeout watchdog** as a
+  stopgap (ADR 0007), but a timed-out parse leaks its goroutine, so the residual
+  memory-growth risk under sustained hostile input is not closed.
+- **Spike goals:** (a) diagnose the hang — is it the missing `/Contents` case
+  specifically, and can we pre-validate page structure to avoid it, or is it
+  fixable upstream; (b) evaluate maintained alternatives to dslipak/pdf;
+  (c) decide whether PDF parsing should run out-of-process (the real fix for an
+  uninterruptible parser). Outcome supersedes ADR 0007.
+- **Until then:** do not point `extract/pdf` at high-volume untrusted input
+  without external process isolation.
