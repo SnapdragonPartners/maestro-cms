@@ -17,3 +17,5 @@ described in an ADR without superseding it.
   subpackages; core stays dependency-free.
 - [0007](0007-pdf-extraction-watchdog-stopgap.md) — PDF extraction uses a timeout
   watchdog as a stopgap for a hanging parser (supersede after the spike).
+- [0008](0008-markdown-verbatim-and-heading-chunking.md) — Markdown is extracted
+  verbatim and chunked by heading (ancestry deferred to the graph).

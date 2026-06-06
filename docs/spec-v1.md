@@ -218,8 +218,8 @@ type BatchFailure struct {
 
 | Package    | In v1? | Shape |
 |------------|:------:|-------|
-| `extract`  | ✅ | Media-type-aware extraction: `Extractor` interface + registry + stdlib `text/plain` extractor in core. Registry canonicalizes media types, bounds input size (`WithMaxBytes`), and rejects empty `parentID`. Returns `[]content.Artifact` (multi-modal; text-only today; `DerivedFrom`=parentID, ID left for the caller). Markdown gets its own later extractor (whitespace is semantic); dependency-bearing formats are subpackages (ADR 0006): `extract/html` (golang.org/x/net/html), `extract/pdf` (dslipak/pdf — ships with a timeout watchdog for a parser hang, ADR 0007), and `extract/docx` (stdlib zip/xml) have landed. A depguard rule enforces that core does not import them. Lifted from Morris. |
-| `chunk`    | ✅ | **Pure, boundary-aware**: segments at semantic boundaries (`Paragraphs` default; pluggable `Boundaries` for headings/pages/sections/code/transcripts/caller units), packs units to a token budget, and hard-splits an oversize unit only as a last resort. Token estimation is a budget *constraint*, not the strategy: injected `func(string) int` — standard injection `llms.EstimateTextTokens` (v0.6.0+), local rune-counted char/4 default. Imports no `maestro-llms`. |
+| `extract`  | ✅ | Media-type-aware extraction: `Extractor` interface + registry + stdlib `text/plain` extractor in core. Registry canonicalizes media types, bounds input size (`WithMaxBytes`), and rejects empty `parentID`. Returns `[]content.Artifact` (multi-modal; text-only today; `DerivedFrom`=parentID, ID left for the caller). Every non-plain-text format is an opt-in subpackage (ADR 0006), enforced by a depguard rule: `extract/html` (golang.org/x/net/html), `extract/pdf` (dslipak/pdf — ships with a timeout watchdog for a parser hang, ADR 0007), `extract/docx` (stdlib zip/xml), and `extract/markdown` (stdlib; verbatim, preserves structure for the chunker, ADR 0008) have landed. Lifted from Morris. |
+| `chunk`    | ✅ | **Pure, boundary-aware**: segments at semantic boundaries (`Paragraphs` default; `Headings` for Markdown — fence-aware ATX/setext, ADR 0008; pluggable `Boundaries` for pages/sections/code/transcripts/caller units), packs units to a token budget, and hard-splits an oversize unit only as a last resort (code-aware for fenced spans: line-boundary cuts, ADR 0008). Token estimation is a budget *constraint*, not the strategy: injected `func(string) int` — standard injection `llms.EstimateTextTokens` (v0.6.0+), local rune-counted char/4 default. Imports no `maestro-llms`. |
 | `content`  | ✅ | `Source` + `Artifact` + media type + single-parent provenance + stable IDs + optional neutral metadata map. New, minimal code. |
 | `embed`    | ✅ | **Runner**, not a contract: batches `[]Chunk`, preserves successful batches and reports per-batch failure diagnostics, with ID-order matching / retry / budget-aware batch sizing over `llms.EmbeddingClient`; returns persist-ready records. Optional `Pipeline` chains extract→chunk→embed. (Failure semantics: ADR 0004.) |
 | `store`    | ✅ | `Get/Put/Delete/Exists(key)` object-store interface — opaque, adapter-defined keys, **no path conventions** — plus optional GCS adapter. Clean lift from Morris. A `content.StoreHandle{Backend, Key}` names which adapter resolves a given key. |
@@ -310,6 +310,8 @@ See [`docs/adr/`](adr/README.md):
 - ADR 0004 — `embed` is an orchestration runner over a pure `chunk`.
 - ADR 0005 — Defer the graph engine to v2; v1 content needs only stable IDs.
 - ADR 0006 — Optional adapters live in subpackages; core stays dependency-free.
+- ADR 0007 — PDF extraction uses a timeout watchdog as a stopgap (supersede after the spike).
+- ADR 0008 — Markdown is extracted verbatim and chunked by heading; ancestry deferred to the graph.
 
 ## 10. Resolved Phase 1 Contracts
 
@@ -330,8 +332,9 @@ re-litigated:
   input. Returned artifacts set `DerivedFrom`=parentID and the produced
   `MediaType`, and leave `ID` empty — the caller assigns IDs (the library never
   mints them) before validating or persisting. Only the `text/plain` extractor
-  ships in core; Markdown gets its own later extractor (whitespace is semantic)
-  and other formats are subpackages.
+  ships in core; every other format is an opt-in subpackage, including the now-
+  landed `extract/markdown` (verbatim, because Markdown whitespace is semantic;
+  ADR 0008).
 - **`extract` is MIME-aware and bounded** — the Registry canonicalizes media
   types via stdlib `mime.ParseMediaType` (lowercased base type, parameters
   dropped), so `text/plain`, `Text/Plain`, and `text/plain; charset=utf-8` all
@@ -350,5 +353,6 @@ re-litigated:
    hook; the exact final field set is pinned when `embed` is implemented.
 2. **Chunker API** — implemented boundary-first (paragraphs + pluggable
    `Boundaries`, token budget as a constraint). Still treat as unvalidated: the
-   set of built-in segmenters (only `Paragraphs` today) and the overlap model
-   may revise as code/transcript/section consumers exercise it. Keep it pure.
+   set of built-in segmenters (`Paragraphs` and `Headings` today) and the
+   overlap model may revise as code/transcript/section consumers exercise it.
+   Keep it pure.

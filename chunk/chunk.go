@@ -242,10 +242,29 @@ func overlapStart(unitTok []int, i, j, overlapTok int) int {
 }
 
 // hardSplit splits the byte span [start, end) — a single semantic unit too large
-// for the budget — into budget-fitting chunks, preferring sentence then word then
+// for the budget — into budget-fitting chunks with back-prepended overlap.
+//
+// If the span contains a fenced code block it is split code-aware
+// (splitFenced): cuts fall on line boundaries, fenced blocks are kept whole
+// where they fit, and a block is broken internally (still at line boundaries)
+// only when it alone exceeds the budget. The one exception is a single line that
+// itself exceeds the budget: there is no line-boundary cut that fits, so it
+// falls back to the prose splitter (word/rune) rather than emit an unbounded
+// chunk. Otherwise the span is prose and is split at sentence then word then
+// rune boundaries (hardSplitProse). This keeps the prose path — and every
+// existing test — byte-for-byte unchanged.
+func hardSplit(text string, start, end, maxTok, overlapTok int, est Estimate, chunks *[]Chunk, idx *int) {
+	if spanHasFence(text, start, end) {
+		splitFenced(text, start, end, maxTok, overlapTok, est, chunks, idx)
+		return
+	}
+	hardSplitProse(text, start, end, maxTok, overlapTok, est, chunks, idx)
+}
+
+// hardSplitProse splits a fence-free oversize span at sentence then word then
 // rune boundaries, with back-prepended overlap. Token budgets are converted to
 // byte windows using the span's own chars-per-token ratio under est.
-func hardSplit(text string, start, end, maxTok, overlapTok int, est Estimate, chunks *[]Chunk, idx *int) {
+func hardSplitProse(text string, start, end, maxTok, overlapTok int, est Estimate, chunks *[]Chunk, idx *int) {
 	span := text[start:end]
 	total := max(est(span), 1)
 	bytesPerToken := float64(len(span)) / float64(total)

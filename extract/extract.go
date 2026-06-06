@@ -1,13 +1,15 @@
 // Package extract turns source bytes into derived content artifacts.
 //
-// It defines the Extractor interface and a media-type Registry, plus the
-// genuinely standard-library extractors (currently plain text). Markdown,
-// despite being stdlib-parseable, gets its own later extractor because its
-// whitespace is semantic and demands deliberate handling rather than prose
-// normalization. Format extractors that need third-party dependencies — HTML
-// (golang.org/x/net/html), PDF, and so on — live in opt-in subpackages so that
-// importing this package pulls only the standard library
-// (see docs/adr/0006-optional-adapters-as-subpackages.md).
+// It defines the Extractor interface and a media-type Registry, plus the one
+// genuinely standard-library extractor that lives in core (plain text). Every
+// other format is an opt-in subpackage so that importing this package pulls only
+// the standard library (see docs/adr/0006-optional-adapters-as-subpackages.md):
+// HTML (golang.org/x/net/html) and PDF (dslipak/pdf) carry third-party
+// dependencies, while DOCX and Markdown are stdlib-only but stay subpackages so
+// formats are uniformly opt-in. Markdown in particular must not use the core
+// text path: its whitespace is semantic (indented code, nested lists, hard
+// breaks), so extract/markdown preserves the body verbatim rather than applying
+// prose normalization.
 //
 // Extractors return []content.Artifact rather than a single text blob so the
 // model is multi-modal from the start: today only text artifacts are produced,
