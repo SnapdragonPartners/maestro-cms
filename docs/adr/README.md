@@ -15,3 +15,5 @@ described in an ADR without superseding it.
   content needs only stable IDs.
 - [0006](0006-optional-adapters-as-subpackages.md) — Optional adapters live in
   subpackages; core stays dependency-free.
+- [0007](0007-pdf-extraction-watchdog-stopgap.md) — PDF extraction uses a timeout
+  watchdog as a stopgap for a hanging parser (supersede after the spike).
