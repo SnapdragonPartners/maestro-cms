@@ -221,7 +221,7 @@ type BatchFailure struct {
 | `extract`  | ✅ | Media-type-aware extraction: `Extractor` interface + registry + stdlib `text/plain` extractor in core. Registry canonicalizes media types, bounds input size (`WithMaxBytes`), and rejects empty `parentID`. Returns `[]content.Artifact` (multi-modal; text-only today; `DerivedFrom`=parentID, ID left for the caller). Every non-plain-text format is an opt-in subpackage (ADR 0006), enforced by a depguard rule: `extract/html` (golang.org/x/net/html), `extract/pdf` (dslipak/pdf — ships with a timeout watchdog for a parser hang, ADR 0007), `extract/docx` (stdlib zip/xml), and `extract/markdown` (stdlib; verbatim, preserves structure for the chunker, ADR 0008) have landed. Lifted from Morris. |
 | `chunk`    | ✅ | **Pure, boundary-aware**: segments at semantic boundaries (`Paragraphs` default; `Headings` for Markdown — fence-aware ATX/setext, ADR 0008; pluggable `Boundaries` for pages/sections/code/transcripts/caller units), packs units to a token budget, and hard-splits an oversize unit only as a last resort (code-aware for fenced spans: line-boundary cuts, ADR 0008). Token estimation is a budget *constraint*, not the strategy: injected `func(string) int` — standard injection `llms.EstimateTextTokens` (v0.6.0+), local rune-counted char/4 default. Imports no `maestro-llms`. |
 | `content`  | ✅ | `Source` + `Artifact` + media type + single-parent provenance + stable IDs + optional neutral metadata map. New, minimal code. |
-| `embed`    | ✅ | **Runner**, not a contract: batches `[]Chunk`, preserves successful batches and reports per-batch failure diagnostics, with ID-order matching / retry / budget-aware batch sizing over `llms.EmbeddingClient`; returns persist-ready records. Optional `Pipeline` chains extract→chunk→embed. (Failure semantics: ADR 0004.) |
+| `embed`    | ✅ | **Runner**, not a contract: `Run` takes `[]Input` (a chunk + its source/artifact provenance, so batches span documents), packs them by input-count and token budget, and embeds over `llms.EmbeddingClient`, returning persist-ready `Record`s in input order. Defensive ID matching (opaque per-input IDs, dup/missing/unknown → batch failure); retry is delegated to `llms` middleware (the runner does not retry); a failed batch is bisected by default to isolate a poison input (`DisableBisect` to opt out). Invalid inputs are reported as failures, never panics. The optional `extract→chunk→embed` `Pipeline` is deferred until a real consumer (Morris) shapes its ergonomics. (Failure semantics: ADR 0004; vocabulary: ADR 0001.) |
 | `store`    | ✅ | `Get/Put/Delete/Exists(key)` object-store interface — opaque, adapter-defined keys, **no path conventions** — plus optional GCS adapter. Clean lift from Morris. A `content.StoreHandle{Backend, Key}` names which adapter resolves a given key. |
 | `testcms`  | ✅ | Deterministic fakes, including a fake embedder. |
 | `retrieval`| v1.x | Search request/response, context-window, source-handle, citation contracts. Deferred until a consumer is ready (§6). |
@@ -348,9 +348,14 @@ re-litigated:
 
 ## 11. Still Open
 
-1. **`embed` record shape** — Phase 1 records carry source ID, artifact ID,
-   chunk index, text, offsets, token count, vector, model ref, and a metadata
-   hook; the exact final field set is pinned when `embed` is implemented.
+1. **`embed` record shape** — *resolved.* `embed.Record` carries source ID,
+   artifact ID, chunk index, text, vector, model ref, token count, and a neutral
+   metadata map. Byte offsets were deliberately omitted (the anticipated
+   "offsets" field): the caller holds the chunk with its offsets at `Run` time
+   and can persist them alongside, and they can be added additively if a
+   retrieval/citation consumer needs them on the record itself. `BatchFailure`
+   carries the failed `[]Input` (not chunk indexes, which are ambiguous across
+   documents).
 2. **Chunker API** — implemented boundary-first (paragraphs + pluggable
    `Boundaries`, token budget as a constraint). Still treat as unvalidated: the
    set of built-in segmenters (`Paragraphs` and `Headings` today) and the

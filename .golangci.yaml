@@ -242,6 +242,7 @@ linters-settings:
           - "**/chunk/*.go"
           - "**/extract/*.go"
           - "**/store/*.go"
+          - "**/embed/*.go"
         deny:
           - pkg: "github.com/SnapdragonPartners/maestro-cms/extract/html"
             desc: "core must not import format-adapter subpackages (ADR 0006); applications wire adapters in"
