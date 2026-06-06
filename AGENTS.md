@@ -121,6 +121,23 @@ This repository does not yet have a Go module, Makefile, lint config, or CI work
 
 Once these exist, prefer the canonical Make targets over ad hoc commands.
 
+## Pull Requests
+
+Merging is blocked on open review threads. When you address review feedback
+(human or bot, e.g. Copilot), always **resolve the thread**, not just reply to
+it — a REST reply does not mark a thread resolved. Resolve via the GraphQL
+`resolveReviewThread` mutation:
+
+```sh
+# list unresolved threads
+gh api graphql -f query='{repository(owner:"SnapdragonPartners",name:"maestro-cms"){pullRequest(number:PR){reviewThreads(first:50){nodes{id isResolved comments(first:1){nodes{path}}}}}}}'
+# resolve one
+gh api graphql -f query='mutation{resolveReviewThread(input:{threadId:"THREAD_ID"}){thread{isResolved}}}'
+```
+
+Leave a thread open only if the feedback is genuinely unresolved and you are
+deferring it deliberately.
+
 ## Versioning
 
 Pre-1.0. Expect v0.x minor versions to evolve quickly while Morris, Cooper, and Maestro validate boundaries.

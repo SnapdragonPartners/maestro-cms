@@ -16,9 +16,8 @@ import (
 //
 // It is deliberately NOT used for Markdown. Whitespace is semantic in Markdown
 // (indented code blocks, nested-list indentation, hard breaks), so the prose
-// normalization here would corrupt it. Markdown gets its own extractor in a
-// later slice, where "preserve verbatim" vs "normalize" vs "strip front matter"
-// vs "extract heading metadata" are deliberate choices rather than a free add-on.
+// normalization here would corrupt it. Markdown has its own extractor, the
+// extract/markdown subpackage, which preserves the body verbatim (see ADR 0008).
 //
 // TextExtractor honors ctx cancellation but does not bound input size; route
 // untrusted sources through a Registry, which applies the size limit.
