@@ -57,7 +57,9 @@ const DefaultTimeout = 30 * time.Second
 // concurrent use.
 type Extractor struct {
 	// Timeout bounds the wall-clock time spent parsing one source before Extract
-	// gives up with extract.ErrMalformedSource. Zero means DefaultTimeout.
+	// gives up with extract.ErrMalformedSource. Zero or negative means
+	// DefaultTimeout (a negative timer would otherwise fire immediately and fail
+	// every parse).
 	Timeout time.Duration
 }
 
@@ -112,6 +114,13 @@ func (e Extractor) Extract(ctx context.Context, r io.Reader, parentID string) ([
 // offers no way to stop it. The result channel is buffered so a leaked goroutine
 // can still finish its send and exit if it ever unblocks.
 func (e Extractor) runBounded(ctx context.Context, data []byte) (string, error) {
+	// If the caller already canceled, don't even launch the parser: it is
+	// uninterruptible, so starting it on a hang input would leak a goroutine for
+	// a result no one is waiting for.
+	if err := ctx.Err(); err != nil {
+		return "", fmt.Errorf("extract: pdf extraction canceled: %w", err)
+	}
+
 	type result struct {
 		text string
 		err  error

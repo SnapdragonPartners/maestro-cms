@@ -106,6 +106,19 @@ func TestExtractMalformedXML(t *testing.T) {
 	}
 }
 
+func TestExtractRejectsOversizedDecompressedPart(t *testing.T) {
+	// A document.xml that decompresses past MaxDecompressedBytes must be rejected
+	// as malformed (the zip-bomb guard) rather than streamed in full. The
+	// Registry's compressed-byte cap does not catch this — a highly compressible
+	// part can fit under it yet expand without bound.
+	data := makeDocx(t, "this paragraph is comfortably larger than the tiny cap below")
+	e := docx.Extractor{MaxDecompressedBytes: 8}
+	_, err := e.Extract(context.Background(), bytes.NewReader(data), "s")
+	if !errors.Is(err, extract.ErrMalformedSource) {
+		t.Fatalf("Extract err = %v, want ErrMalformedSource for oversized decompressed part", err)
+	}
+}
+
 func TestExtractHonorsCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

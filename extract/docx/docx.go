@@ -38,13 +38,37 @@ const MediaType content.MediaType = "application/vnd.openxmlformats-officedocume
 // documentPart is the archive path of the main document body in a .docx.
 const documentPart = "word/document.xml"
 
-// Extractor extracts body text from DOCX sources. It is stateless and safe for
-// concurrent use.
-type Extractor struct{}
+// DefaultMaxDecompressedBytes caps how much of word/document.xml the decoder will
+// read. The Registry bounds the *compressed* input, but a zip bomb can expand far
+// beyond that, so the uncompressed stream needs its own ceiling. 64 MiB is far
+// larger than any realistic body-text document.xml while still bounding memory.
+const DefaultMaxDecompressedBytes int64 = 64 << 20 // 64 MiB
 
-// New returns a DOCX Extractor.
+// errDecompressedTooLarge is returned by the capping reader when the uncompressed
+// document.xml exceeds the budget. It surfaces to the caller as ErrMalformedSource
+// (a hostile or corrupt archive), matching how other parse failures are reported.
+var errDecompressedTooLarge = errors.New("word/document.xml exceeds decompressed size limit (possible zip bomb)")
+
+// Extractor extracts body text from DOCX sources. It carries only immutable
+// configuration and is safe for concurrent use.
+type Extractor struct {
+	// MaxDecompressedBytes caps the uncompressed size of word/document.xml the
+	// decoder reads, defending against a zip bomb whose compressed form fits under
+	// the Registry's input cap but expands to exhaust memory. Zero or negative
+	// means DefaultMaxDecompressedBytes.
+	MaxDecompressedBytes int64
+}
+
+// New returns a DOCX Extractor using DefaultMaxDecompressedBytes.
 func New() *Extractor {
 	return &Extractor{}
+}
+
+func (e Extractor) maxDecompressed() int64 {
+	if e.MaxDecompressedBytes <= 0 {
+		return DefaultMaxDecompressedBytes
+	}
+	return e.MaxDecompressedBytes
 }
 
 // Extract reads r as a .docx archive and returns a single text/plain artifact
@@ -53,8 +77,9 @@ func New() *Extractor {
 //
 //   - extract.ErrNoContent if the document parses cleanly but has no body text;
 //   - an error matching extract.ErrMalformedSource if the archive is not a valid
-//     zip, lacks word/document.xml, or contains unparseable XML.
-func (Extractor) Extract(ctx context.Context, r io.Reader, parentID string) ([]content.Artifact, error) {
+//     zip, lacks word/document.xml, contains unparseable XML, or whose
+//     word/document.xml decompresses past MaxDecompressedBytes (a zip bomb).
+func (e Extractor) Extract(ctx context.Context, r io.Reader, parentID string) ([]content.Artifact, error) {
 	data, err := extract.ReadAll(ctx, r)
 	if err != nil {
 		return nil, err
@@ -71,7 +96,7 @@ func (Extractor) Extract(ctx context.Context, r io.Reader, parentID string) ([]c
 	}
 	defer func() { _ = doc.Close() }()
 
-	text, err := decodeBodyText(ctx, doc)
+	text, err := decodeBodyText(ctx, doc, e.maxDecompressed())
 	if err != nil {
 		return nil, err
 	}
@@ -104,8 +129,10 @@ func openDocumentPart(zr *zip.Reader) (io.ReadCloser, error) {
 // decodeBodyText stream-parses word/document.xml, concatenating <w:t> text-run
 // content and emitting a blank line after each closing <w:p> so paragraph
 // structure survives for the chunker. All other elements are walked and ignored.
-func decodeBodyText(ctx context.Context, r io.Reader) (string, error) {
-	dec := xml.NewDecoder(r)
+// Reading is bounded at maxBytes of uncompressed input; exceeding it surfaces as
+// ErrMalformedSource so a zip bomb cannot exhaust memory.
+func decodeBodyText(ctx context.Context, r io.Reader, maxBytes int64) (string, error) {
+	dec := xml.NewDecoder(&cappedReader{r: r, remaining: maxBytes})
 	var b strings.Builder
 	inText := false
 
@@ -139,4 +166,31 @@ func decodeBodyText(ctx context.Context, r io.Reader) (string, error) {
 		}
 	}
 	return b.String(), nil
+}
+
+// cappedReader returns errDecompressedTooLarge once more than the permitted
+// number of bytes is read, instead of streaming an unbounded decompressed part.
+// Exactly remaining bytes is allowed; one more trips the limit. It mirrors the
+// limitReader the Registry applies to compressed input, here guarding the
+// uncompressed XML the zip reader hands back.
+type cappedReader struct {
+	r         io.Reader
+	remaining int64
+}
+
+func (cr *cappedReader) Read(p []byte) (int, error) {
+	if cr.remaining < 0 {
+		return 0, errDecompressedTooLarge
+	}
+	// Permit reading one byte past the allowance so an exactly-at-limit part
+	// succeeds while an over-limit part is detected rather than truncated.
+	if int64(len(p)) > cr.remaining+1 {
+		p = p[:cr.remaining+1]
+	}
+	n, err := cr.r.Read(p)
+	cr.remaining -= int64(n)
+	if cr.remaining < 0 {
+		return n, errDecompressedTooLarge
+	}
+	return n, err //nolint:wrapcheck // pass-through of underlying reader, incl io.EOF
 }
