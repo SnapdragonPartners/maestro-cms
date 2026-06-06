@@ -217,6 +217,9 @@ func TestRetryableReflectsProviderError(t *testing.T) {
 	}{
 		{"rate_limited", llms.ErrorKindRateLimited, true},
 		{"bad_request", llms.ErrorKindBadRequest, false},
+		// A provider-classified timeout (not the context.DeadlineExceeded sentinel)
+		// is an ordinary retryable batch failure, not a run-level cancellation.
+		{"timeout", llms.ErrorKindTimeout, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -307,6 +310,70 @@ func TestOrderPreservedThroughBisection(t *testing.T) {
 	}
 	if res.Failures[0].Inputs[0].Chunk.Index != 2 || res.Failures[1].Inputs[0].Chunk.Index != 4 {
 		t.Fatalf("failures out of order: %d then %d", res.Failures[0].Inputs[0].Chunk.Index, res.Failures[1].Inputs[0].Chunk.Index)
+	}
+}
+
+func TestCancellationDuringEmbedIsRunError(t *testing.T) {
+	// The client returns context.Canceled mid-run (run context still "alive" from
+	// the runner's view): it must surface as Run's error, not a batch failure, and
+	// must not fan out via bisection.
+	fake := &testcms.FakeEmbedder{FailFunc: func(llms.EmbeddingRequest) error {
+		return context.Canceled
+	}}
+	inputs := []embed.Input{
+		in("s", "a", 0, "x"), in("s", "a", 1, "y"), in("s", "a", 2, "z"), in("s", "a", 3, "w"),
+	}
+	res, err := embed.Run(context.Background(), fake, inputs, embed.Config{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want wrapped context.Canceled", err)
+	}
+	if len(res.Failures) != 0 {
+		t.Fatalf("cancellation must not record batch failures, got %+v", res.Failures)
+	}
+	if len(res.Records) != 0 {
+		t.Fatalf("got %d records, want 0", len(res.Records))
+	}
+	if fake.Calls() != 1 {
+		t.Fatalf("cancellation must abort without bisection fan-out, got %d calls", fake.Calls())
+	}
+}
+
+func TestRequestConfigForwarded(t *testing.T) {
+	fake := &testcms.FakeEmbedder{}
+	inputs := []embed.Input{{
+		SourceID: "s", ArtifactID: "a",
+		Chunk: chunk.Chunk{Text: "body", Index: 0},
+		Title: "Doc Title",
+	}}
+	cfg := embed.Config{
+		Task:       llms.EmbeddingTaskRetrievalDocument,
+		Purpose:    llms.Purpose("ingest"),
+		Dimensions: 16,
+	}
+	res, err := embed.Run(context.Background(), fake, inputs, cfg)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	reqs := fake.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("got %d requests, want 1", len(reqs))
+	}
+	r := reqs[0]
+	if r.Task != llms.EmbeddingTaskRetrievalDocument {
+		t.Fatalf("Task = %q, want retrieval_document", r.Task)
+	}
+	if r.Purpose != llms.Purpose("ingest") {
+		t.Fatalf("Purpose = %q, want ingest", r.Purpose)
+	}
+	if r.Dimensions != 16 {
+		t.Fatalf("Dimensions = %d, want 16", r.Dimensions)
+	}
+	if len(r.Inputs) != 1 || r.Inputs[0].Title != "Doc Title" {
+		t.Fatalf("Title not forwarded: %+v", r.Inputs)
+	}
+	// Dimensions are honored end to end: the record vector has the requested size.
+	if len(res.Records) != 1 || len(res.Records[0].Vector) != 16 {
+		t.Fatalf("record vector len = %d, want 16", len(res.Records[0].Vector))
 	}
 }
 

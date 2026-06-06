@@ -205,7 +205,10 @@ func Run(ctx context.Context, client llms.EmbeddingClient, inputs []Input, cfg C
 			runErr = fmt.Errorf("embed: run canceled: %w", err)
 			break
 		}
-		embedBatch(ctx, client, batch, cfg, recordsByPos, &failures)
+		if err := embedBatch(ctx, client, batch, cfg, recordsByPos, &failures); err != nil {
+			runErr = err
+			break
+		}
 	}
 
 	return assemble(len(inputs), recordsByPos, failures), runErr
@@ -263,7 +266,11 @@ func packBatches(items []indexedInput, maxInputs, maxTokens int) [][]indexedInpu
 // is a single input) so a durable poison input is isolated while its batch-mates
 // still succeed. A response that does not match the request one-to-one is a
 // non-retryable batch failure.
-func embedBatch(ctx context.Context, client llms.EmbeddingClient, batch []indexedInput, cfg Config, recordsByPos map[int]Record, failures *[]posFailure) {
+//
+// It returns a non-nil error only for context cancellation, which Run surfaces
+// as its own returned error rather than as a per-batch diagnostic; all other
+// problems are recorded as BatchFailures and embedBatch returns nil.
+func embedBatch(ctx context.Context, client llms.EmbeddingClient, batch []indexedInput, cfg Config, recordsByPos map[int]Record, failures *[]posFailure) error {
 	req := llms.EmbeddingRequest{
 		Inputs:     make([]llms.EmbeddingInput, len(batch)),
 		Purpose:    cfg.Purpose,
@@ -277,14 +284,28 @@ func embedBatch(ctx context.Context, client llms.EmbeddingClient, batch []indexe
 
 	resp, err := client.Embed(ctx, req)
 	if err != nil {
+		// Cancellation (or a run-level deadline) is the one condition Run reports
+		// via its returned error: abort immediately, without bisecting or
+		// recording a failure. We key on the run context being done (ctx.Err) plus
+		// a propagated context.Canceled in err, rather than a bare
+		// context.DeadlineExceeded, so a per-call timeout from retry/timeout
+		// middleware (run context still alive) stays an ordinary, retryable batch
+		// failure instead of killing the whole run.
+		if ctx.Err() != nil {
+			return fmt.Errorf("embed: run canceled: %w", ctx.Err())
+		}
+		if errors.Is(err, context.Canceled) {
+			return fmt.Errorf("embed: run canceled: %w", err)
+		}
 		if !cfg.DisableBisect && len(batch) > 1 {
 			mid := len(batch) / 2
-			embedBatch(ctx, client, batch[:mid], cfg, recordsByPos, failures)
-			embedBatch(ctx, client, batch[mid:], cfg, recordsByPos, failures)
-			return
+			if e := embedBatch(ctx, client, batch[:mid], cfg, recordsByPos, failures); e != nil {
+				return e
+			}
+			return embedBatch(ctx, client, batch[mid:], cfg, recordsByPos, failures)
 		}
 		addBatchFailure(failures, batch, fmt.Errorf("embed: batch of %d failed: %w", len(batch), err), llms.Retryable(err))
-		return
+		return nil
 	}
 
 	byID := make(map[string][]float32, len(resp.Vectors))
@@ -292,7 +313,7 @@ func embedBatch(ctx context.Context, client llms.EmbeddingClient, batch []indexe
 		v := &resp.Vectors[i]
 		if _, dup := byID[v.ID]; dup {
 			addBatchFailure(failures, batch, fmt.Errorf("%w: duplicate vector ID %q", ErrResponseMismatch, v.ID), false)
-			return
+			return nil
 		}
 		byID[v.ID] = v.Values
 	}
@@ -300,14 +321,14 @@ func embedBatch(ctx context.Context, client llms.EmbeddingClient, batch []indexe
 	// vectors and shortfalls) and a vector for every requested input.
 	if len(byID) != len(batch) {
 		addBatchFailure(failures, batch, fmt.Errorf("%w: got %d vectors for %d inputs", ErrResponseMismatch, len(byID), len(batch)), false)
-		return
+		return nil
 	}
 	for i := range batch {
 		it := &batch[i]
 		vals, ok := byID[requestID(it.pos)]
 		if !ok {
 			addBatchFailure(failures, batch, fmt.Errorf("%w: no vector for input at position %d", ErrResponseMismatch, it.pos), false)
-			return
+			return nil
 		}
 		recordsByPos[it.pos] = Record{
 			SourceID:   it.in.SourceID,
@@ -320,6 +341,7 @@ func embedBatch(ctx context.Context, client llms.EmbeddingClient, batch []indexe
 			Metadata:   maps.Clone(it.in.Metadata),
 		}
 	}
+	return nil
 }
 
 // requestID is an opaque, collision-free per-input ID built from the input's

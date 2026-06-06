@@ -3,6 +3,7 @@ package testcms
 import (
 	"context"
 	"hash/fnv"
+	"slices"
 	"strconv"
 	"sync"
 
@@ -38,6 +39,7 @@ type FakeEmbedder struct {
 
 	mu        sync.Mutex
 	callCount int
+	requests  []llms.EmbeddingRequest
 }
 
 // DefaultFakeDimensions is the vector length a FakeEmbedder produces when Dims
@@ -56,6 +58,7 @@ func (f *FakeEmbedder) Embed(ctx context.Context, req llms.EmbeddingRequest) (ll
 
 	f.mu.Lock()
 	f.callCount++
+	f.requests = append(f.requests, req)
 	f.mu.Unlock()
 
 	if f.FailFunc != nil {
@@ -64,7 +67,12 @@ func (f *FakeEmbedder) Embed(ctx context.Context, req llms.EmbeddingRequest) (ll
 		}
 	}
 
+	// Honor a per-request dimension override, matching real providers and the
+	// maestro-llms fake, so embed.Config.Dimensions can be exercised end to end.
 	dims := f.dims()
+	if req.Dimensions > 0 {
+		dims = req.Dimensions
+	}
 	resp := llms.EmbeddingResponse{Vectors: make([]llms.EmbeddingVector, len(req.Inputs))}
 	tokens := 0
 	for i := range req.Inputs {
@@ -97,6 +105,17 @@ func (f *FakeEmbedder) Calls() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.callCount
+}
+
+// Requests returns a copy of the embedding requests received so far, in call
+// order. Use it to assert that the caller forwarded Task, Purpose, Dimensions,
+// and per-input Title. The returned slice is a fresh copy; the contained
+// requests still reference their original Inputs slices, which the runner does
+// not mutate after the call.
+func (f *FakeEmbedder) Requests() []llms.EmbeddingRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.requests)
 }
 
 func (f *FakeEmbedder) dims() int {
