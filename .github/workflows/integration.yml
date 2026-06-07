@@ -1,0 +1,25 @@
+name: Integration
+
+# Manual-dispatch only: these tests need Docker (a fake-gcs-server emulator) and
+# are not part of the default network-free CI. Run them before merging changes to
+# real-service adapters such as store/gcs.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    name: Integration (GCS emulator)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Integration tests
+        run: make test-integration
