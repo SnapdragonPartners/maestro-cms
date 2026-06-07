@@ -1,4 +1,6 @@
-.PHONY: build test test-coverage lint fix fix-imports tidy install-lint install-goimports install-hooks clean
+.PHONY: build test test-integration test-coverage lint fix fix-imports tidy install-lint install-goimports install-hooks clean
+
+FAKEGCS_CONTAINER := maestro-cms-fakegcs
 
 # Build all packages.
 build: lint
@@ -8,6 +10,16 @@ build: lint
 # Single test: make test TESTARGS='-run TestName ./content/...'
 test:
 	go test -cover $(TESTARGS) ./...
+
+# Run build-tagged integration tests against a Dockerized fake-gcs-server.
+# Requires Docker. Starts the emulator, waits for readiness, runs the
+# integration-tagged tests with STORAGE_EMULATOR_HOST set, then tears it down.
+# Single test: make test-integration TESTARGS='-run TestGCSRoundTrip ./store/gcs/...'
+test-integration:
+	docker run -d --rm --name $(FAKEGCS_CONTAINER) -p 4443:4443 fsouza/fake-gcs-server -scheme http -backend memory -public-host localhost:4443 >/dev/null
+	@for i in $$(seq 1 50); do curl -sf "http://localhost:4443/storage/v1/b?project=test" >/dev/null 2>&1 && break || sleep 0.2; done
+	@STORAGE_EMULATOR_HOST=http://localhost:4443 go test -tags=integration $(TESTARGS) ./... ; \
+		status=$$? ; docker stop $(FAKEGCS_CONTAINER) >/dev/null ; exit $$status
 
 # Generate an HTML coverage report.
 test-coverage:

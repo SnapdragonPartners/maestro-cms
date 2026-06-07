@@ -4,21 +4,21 @@ Repo-tooling items intentionally left out of the initial scaffolding
 (`maestro-llms` has them; we don't yet, because the trigger doesn't exist).
 Add each when its trigger lands so we don't rediscover the gap later.
 
-Status: items 1 and 4 open; items 2 and 3 done (kept here for the audit trail).
+Status: item 4 open; items 1, 2, and 3 done (kept here for the audit trail).
 
-## 1. Integration test target + workflow
+## 1. Integration test target + workflow — DONE
 
-- **What `maestro-llms` has:** a `test-integration` Make target (OS-aware:
-  macOS routes through an ad-hoc-codesign script, Linux/CI runs
-  `go test -tags=integration`), a `test-integration-local` escape hatch, and a
-  manual-dispatch `integration.yml` GitHub workflow that runs live tests against
-  real services.
-- **Why deferred:** `maestro-cms` has no integration tests yet. Core packages
-  (extract/chunk/content/tokens) are pure and unit-tested.
-- **Add when:** the first adapter that talks to a real external service lands —
-  e.g. `store/gcs` (real GCS / emulator) or `index/pgvector` (real Postgres).
-  At that point add the build-tagged tests, the `test-integration` target, and a
-  manual-dispatch workflow; keep the default `make test` and CI network-free.
+- **Done:** landed with the first real-service adapter, `store/gcs`. A
+  `test-integration` Make target starts a Dockerized `fsouza/fake-gcs-server`
+  (no official Google GCS emulator exists), waits for readiness, runs the
+  `//go:build integration` tests with `STORAGE_EMULATOR_HOST` set, and tears the
+  container down. A manual-dispatch `integration.yml` workflow runs the same on
+  CI. The default `make test` and CI stay network-/Docker-free: the tagged tests
+  are excluded without the `integration` tag and `t.Skip` when the emulator host
+  is unset.
+- **Extend when:** the next real-service adapter lands (e.g. `index/pgvector`
+  against real Postgres) — add its build-tagged tests under the same target. If a
+  macOS ad-hoc-codesign step is ever needed (as in `maestro-llms`), add it then.
 
 ## 2. golangci-lint depguard: core-must-not-import-adapters — DONE
 
