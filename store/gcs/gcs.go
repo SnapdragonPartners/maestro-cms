@@ -34,8 +34,9 @@ import (
 // Store is a store.ObjectStore backed by a single GCS bucket. All operations are
 // scoped to the bucket passed at construction.
 type Store struct {
-	client *storage.Client
-	bucket string
+	client     *storage.Client
+	bucket     string
+	ownsClient bool
 }
 
 var _ store.ObjectStore = (*Store)(nil)
@@ -43,8 +44,11 @@ var _ store.ObjectStore = (*Store)(nil)
 // New constructs a Store over bucket, creating a GCS client with the given
 // options. In normal operation pass no options and the client authenticates via
 // Application Default Credentials; for tests set STORAGE_EMULATOR_HOST, which the
-// SDK honors without credentials. Pass the long-lived context the client should
-// live under; release it with Close.
+// SDK honors without credentials.
+//
+// ctx is used only to construct the client (auth and connection setup) and is
+// not retained: canceling it later does not close the client — call Close for
+// that. A Store created by New owns its client and closes it on Close.
 func New(ctx context.Context, bucket string, opts ...option.ClientOption) (*Store, error) {
 	if bucket == "" {
 		return nil, errors.New("gcs: bucket must not be empty")
@@ -53,23 +57,38 @@ func New(ctx context.Context, bucket string, opts ...option.ClientOption) (*Stor
 	if err != nil {
 		return nil, fmt.Errorf("gcs: new client: %w", err)
 	}
-	return &Store{client: client, bucket: bucket}, nil
+	return &Store{client: client, bucket: bucket, ownsClient: true}, nil
 }
 
-// NewWithClient wraps an existing *storage.Client as a Store over bucket. It is
-// the seam for callers that construct and share their own client (and for tests
-// that build a client against an emulator). The caller owns the client's
-// lifecycle; Store.Close will still close it.
+// NewWithClient wraps an existing *storage.Client as a Store over bucket — the
+// seam for callers that build and share their own client (one client across
+// several buckets, or a client pointed at an emulator in tests).
+//
+// Ownership stays with the caller: Store.Close does NOT close a client passed
+// here, so sharing one client across multiple Stores is safe and the caller
+// closes it once when done. (A Store from New, by contrast, owns and closes the
+// client it created.)
+//
+// It panics if bucket is empty or client is nil — both are wiring bugs that
+// would otherwise produce a Store that panics on first use.
 func NewWithClient(bucket string, client *storage.Client) *Store {
-	return &Store{client: client, bucket: bucket}
+	if bucket == "" {
+		panic("gcs: NewWithClient requires a non-empty bucket")
+	}
+	if client == nil {
+		panic("gcs: NewWithClient requires a non-nil client")
+	}
+	return &Store{client: client, bucket: bucket, ownsClient: false}
 }
 
 // Bucket returns the bucket name this store is scoped to.
 func (s *Store) Bucket() string { return s.bucket }
 
-// Close releases the underlying client's connection pool.
+// Close releases the client's connection pool, but only if this Store created
+// the client (via New). A client supplied to NewWithClient is owned by the
+// caller and left open, so Close is a no-op for such a Store.
 func (s *Store) Close() error {
-	if s.client == nil {
+	if !s.ownsClient || s.client == nil {
 		return nil
 	}
 	if err := s.client.Close(); err != nil {
@@ -94,12 +113,20 @@ func (s *Store) Get(ctx context.Context, key string) (io.ReadCloser, error) {
 // Put writes the bytes read from r to key, replacing any existing object. The
 // upload is finalized atomically on success; a copy failure aborts it without
 // committing a partial object.
+//
+// Aborting matters: a GCS Writer buffers and uploads on Close, so calling Close
+// after a partial io.Copy would finalize a truncated object. To prevent that we
+// give the Writer a child context and cancel it on copy failure, so Close aborts
+// the upload (the Writer also has no CloseWithError abort path — the SDK directs
+// callers to cancel the context instead).
 func (s *Store) Put(ctx context.Context, key string, r io.Reader) error {
-	w := s.client.Bucket(s.bucket).Object(key).NewWriter(ctx)
+	wctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	w := s.client.Bucket(s.bucket).Object(key).NewWriter(wctx)
 	if _, err := io.Copy(w, r); err != nil {
-		// The resumable upload is already aborted; the Close error after a failed
-		// copy is uninteresting, so surface the original cause.
-		_ = w.Close()
+		cancel()      // abort the upload before Close so no partial object commits
+		_ = w.Close() // returns the cancellation error; the copy error is the real cause
 		return fmt.Errorf("gcs: put %q: %w", key, err)
 	}
 	if err := w.Close(); err != nil {

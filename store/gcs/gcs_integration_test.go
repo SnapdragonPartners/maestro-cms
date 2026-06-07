@@ -46,8 +46,25 @@ func newStore(t *testing.T) *gcs.Store {
 		}
 	}
 	st := gcs.NewWithClient(testBucket, client)
-	t.Cleanup(func() { _ = st.Close() })
+	// NewWithClient does not take ownership, so the test closes the client it
+	// created (st.Close would be a no-op here).
+	t.Cleanup(func() { _ = client.Close() })
 	return st
+}
+
+// errReader yields data once, then fails — to exercise a mid-stream reader error.
+type errReader struct {
+	data []byte
+	err  error
+	done bool
+}
+
+func (e *errReader) Read(p []byte) (int, error) {
+	if !e.done {
+		e.done = true
+		return copy(p, e.data), nil
+	}
+	return 0, e.err
 }
 
 func TestGCSRoundTrip(t *testing.T) {
@@ -102,12 +119,36 @@ func TestGCSOverwrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	got, _ := io.ReadAll(rc)
+	got, err := io.ReadAll(rc)
 	_ = rc.Close()
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
 	if string(got) != "second" {
 		t.Fatalf("after overwrite Get = %q, want %q", got, "second")
 	}
 	_ = st.Delete(ctx, key)
+}
+
+// TestGCSPutAbortsOnReaderError verifies that a reader error mid-stream aborts
+// the upload instead of finalizing a truncated object: Put must fail and leave
+// no object behind.
+func TestGCSPutAbortsOnReaderError(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	const key = "abort/partial.bin"
+
+	r := &errReader{data: []byte("partial data"), err: errors.New("reader blew up")}
+	if err := st.Put(ctx, key, r); err == nil {
+		t.Fatal("Put with an erroring reader returned nil, want error")
+	}
+	ok, err := st.Exists(ctx, key)
+	if err != nil {
+		t.Fatalf("Exists: %v", err)
+	}
+	if ok {
+		t.Fatal("Put aborted but an object was still committed; want no object")
+	}
 }
 
 func TestGCSGetMissingIsNotFound(t *testing.T) {
