@@ -117,8 +117,8 @@ func (s *Store) Get(ctx context.Context, key string) (io.ReadCloser, error) {
 // Aborting matters: a GCS Writer buffers and uploads on Close, so calling Close
 // after a partial io.Copy would finalize a truncated object. To prevent that we
 // give the Writer a child context and cancel it on copy failure, so Close aborts
-// the upload (the Writer also has no CloseWithError abort path — the SDK directs
-// callers to cancel the context instead).
+// the upload (the SDK directs callers to cancel the context rather than use the
+// deprecated Writer.CloseWithError).
 func (s *Store) Put(ctx context.Context, key string, r io.Reader) error {
 	wctx, cancel := context.WithCancel(ctx)
 	defer cancel()
