@@ -40,6 +40,10 @@ func (r *Registry) SupportedMediaTypes() []content.MediaType {
 // with no Blob handle and non-empty Text. The test is structural (payload shape),
 // not semantic: it does not inspect MediaType, so inline OCR, transcript, or
 // caption text counts too. Callers that care about media type filter further.
+//
+// The returned artifacts are shallow copies: as with content.Artifact generally,
+// each shares its Metadata map with the input (no deep clone). Use
+// content.Artifact.Clone for an independent copy.
 func TextArtifacts(artifacts []content.Artifact) []content.Artifact {
 	out := make([]content.Artifact, 0, len(artifacts))
 	for i := range artifacts {
@@ -56,6 +60,9 @@ func TextArtifacts(artifacts []content.Artifact) []content.Artifact {
 // there is more than one — the multi-artifact case is the application's policy to
 // resolve, not a choice the library makes for it. It is the convenience for the
 // common "this source yields exactly one text payload" path.
+//
+// As with TextArtifacts, the returned artifact is a shallow copy and shares its
+// Metadata map with the input; use content.Artifact.Clone for an independent copy.
 func SingleTextArtifact(artifacts []content.Artifact) (content.Artifact, error) {
 	texts := TextArtifacts(artifacts)
 	switch len(texts) {

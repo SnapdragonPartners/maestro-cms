@@ -17,7 +17,7 @@ func IsNotFound(err error) bool {
 // where "already gone" is the desired outcome. Any other error is returned
 // unchanged.
 func DeleteIfExists(ctx context.Context, s ObjectStore, key string) error {
-	if err := s.Delete(ctx, key); err != nil && !errors.Is(err, ErrObjectNotFound) {
+	if err := s.Delete(ctx, key); err != nil && !IsNotFound(err) {
 		return err //nolint:wrapcheck // pass-through of the store's own already-contextual Delete error
 	}
 	return nil

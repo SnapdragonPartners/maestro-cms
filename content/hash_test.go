@@ -50,7 +50,7 @@ func TestSHA256HexReaderAgreesWithBytes(t *testing.T) {
 	if got != want {
 		t.Fatalf("reader hash %q != string hash %q", got, want)
 	}
-	if int(n) != len(s) {
+	if n != int64(len(s)) {
 		t.Fatalf("n = %d, want %d", n, len(s))
 	}
 }
