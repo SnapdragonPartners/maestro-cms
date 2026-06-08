@@ -252,6 +252,8 @@ linters-settings:
             desc: "core must not import format-adapter subpackages (ADR 0006); applications wire adapters in"
           - pkg: "github.com/SnapdragonPartners/maestro-cms/extract/markdown"
             desc: "core must not import format-adapter subpackages (ADR 0006); applications wire adapters in"
+          - pkg: "github.com/SnapdragonPartners/maestro-cms/extract/preset"
+            desc: "core must not import the format-bundle subpackage (ADR 0006); applications wire it in"
           - pkg: "github.com/SnapdragonPartners/maestro-cms/store/gcs"
             desc: "core must not import storage-adapter subpackages (ADR 0006); applications wire adapters in"
           - pkg: "github.com/SnapdragonPartners/maestro-cms/index"
