@@ -12,6 +12,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"strings"
 	"testing"
 
 	"cloud.google.com/go/storage"
@@ -173,4 +174,32 @@ func TestGCSExistsMissingIsFalse(t *testing.T) {
 	if err != nil || ok {
 		t.Fatalf("Exists missing = (%v, %v), want (false, nil)", ok, err)
 	}
+}
+
+func TestGCSNewEmulatorRoundTrip(t *testing.T) {
+	_ = newStore(t) // skips if no emulator, and ensures the bucket exists
+	ctx := context.Background()
+	st, err := gcs.NewEmulator(ctx, testBucket, os.Getenv("STORAGE_EMULATOR_HOST"))
+	if err != nil {
+		t.Fatalf("NewEmulator: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() }) // New-constructed: owns and closes its client
+
+	const key = "emulator/obj.bin"
+	if err := st.Put(ctx, key, strings.NewReader("via emulator")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	rc, err := st.Get(ctx, key)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	got, err := io.ReadAll(rc)
+	_ = rc.Close()
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(got) != "via emulator" {
+		t.Fatalf("Get = %q, want %q", got, "via emulator")
+	}
+	_ = st.Delete(ctx, key)
 }

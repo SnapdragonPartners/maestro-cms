@@ -60,6 +60,19 @@ func New(ctx context.Context, bucket string, opts ...option.ClientOption) (*Stor
 	return &Store{client: client, bucket: bucket, ownsClient: true}, nil
 }
 
+// NewEmulator constructs a Store over bucket pointed at a GCS-compatible
+// emulator endpoint (e.g. a fsouza/fake-gcs-server) with authentication
+// disabled. It is a dev/test convenience equivalent to
+// New(ctx, bucket, option.WithEndpoint(endpoint), option.WithoutAuthentication());
+// do not use it against real GCS. endpoint must be non-empty. (Alternatively,
+// set STORAGE_EMULATOR_HOST and use New, which the SDK honors automatically.)
+func NewEmulator(ctx context.Context, bucket, endpoint string) (*Store, error) {
+	if endpoint == "" {
+		return nil, errors.New("gcs: emulator endpoint must not be empty")
+	}
+	return New(ctx, bucket, option.WithEndpoint(endpoint), option.WithoutAuthentication())
+}
+
 // NewWithClient wraps an existing *storage.Client as a Store over bucket — the
 // seam for callers that build and share their own client (one client across
 // several buckets, or a client pointed at an emulator in tests).
