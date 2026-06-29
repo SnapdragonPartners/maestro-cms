@@ -78,6 +78,22 @@ func TestRealRoundTrip(t *testing.T) {
 	}
 }
 
+// TestOutputCapEnforced: a tiny output cap against a PDF that yields more text
+// kills the process and returns ErrOutputTooLarge (not a malformed-source error).
+func TestOutputCapEnforced(t *testing.T) {
+	if _, err := exec.LookPath("pdftotext"); err != nil {
+		t.Skip("pdftotext not installed")
+	}
+	eng := pdftotext.New(pdftotext.WithMaxOutputBytes(4)) // "Hello World" exceeds 4 bytes
+	_, err := eng.Pages(context.Background(), makeTextPDF("Hello World"))
+	if !errors.Is(err, pdftotext.ErrOutputTooLarge) {
+		t.Fatalf("err = %v, want ErrOutputTooLarge", err)
+	}
+	if errors.Is(err, extract.ErrMalformedSource) {
+		t.Fatal("output-cap error should not also be ErrMalformedSource")
+	}
+}
+
 // TestMalformedInput feeds non-PDF bytes; pdftotext should fail and the engine
 // should report a malformed source (skips when the binary is absent).
 func TestMalformedInput(t *testing.T) {

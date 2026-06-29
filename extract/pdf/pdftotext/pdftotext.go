@@ -32,15 +32,31 @@ const DefaultBinary = "pdftotext"
 // killed and Pages returns ErrMalformedSource.
 const DefaultTimeout = 30 * time.Second
 
+// DefaultMaxOutputBytes caps the extracted text pdftotext may produce. The
+// Registry bounds the *compressed* input, but a small adversarial PDF can expand
+// to far more text, so the output stream needs its own ceiling to bound the Go
+// worker's heap. 64 MiB is generous for real documents while preventing OOM.
+const DefaultMaxOutputBytes int64 = 64 << 20
+
+// stderrCapBytes bounds captured diagnostics so a chatty/hostile process cannot
+// grow the heap via stderr either; output past this is dropped.
+const stderrCapBytes = 64 << 10
+
 // ErrEngineUnavailable indicates the pdftotext binary was not found, so the
 // engine cannot run. Consumers can detect this to fall back or surface a clear
 // "install poppler-utils" message.
 var ErrEngineUnavailable = errors.New("pdftotext: binary not found on PATH")
 
+// ErrOutputTooLarge indicates pdftotext produced more extracted text than the
+// configured output cap; the process is killed and this is returned. It is a
+// resource limit, distinct from a malformed PDF.
+var ErrOutputTooLarge = errors.New("pdftotext: output exceeds size limit")
+
 // Engine extracts PDF text via the pdftotext CLI. It is safe for concurrent use.
 type Engine struct {
-	binary  string
-	timeout time.Duration
+	binary    string
+	timeout   time.Duration
+	maxOutput int64
 }
 
 // Option configures an Engine.
@@ -51,6 +67,10 @@ func WithBinary(path string) Option { return func(e *Engine) { e.binary = path }
 
 // WithTimeout overrides the per-call timeout (default DefaultTimeout).
 func WithTimeout(d time.Duration) Option { return func(e *Engine) { e.timeout = d } }
+
+// WithMaxOutputBytes overrides the extracted-text output cap (default
+// DefaultMaxOutputBytes). Non-positive means the default.
+func WithMaxOutputBytes(n int64) Option { return func(e *Engine) { e.maxOutput = n } }
 
 // New returns a pdftotext Engine.
 func New(opts ...Option) *Engine {
@@ -78,6 +98,13 @@ func (e *Engine) to() time.Duration {
 	return e.timeout
 }
 
+func (e *Engine) maxOut() int64 {
+	if e.maxOutput <= 0 {
+		return DefaultMaxOutputBytes
+	}
+	return e.maxOutput
+}
+
 // Pages runs pdftotext over data and splits its output into per-page text. The
 // child process is bounded by the engine timeout (and the caller's ctx); a
 // timeout or non-zero exit becomes ErrMalformedSource, a canceled ctx becomes a
@@ -97,12 +124,18 @@ func (e *Engine) Pages(ctx context.Context, data []byte) ([]pdf.Page, error) {
 	// the PDF data is piped via stdin — there is no injection vector.
 	cmd := exec.CommandContext(cctx, bin, "-enc", "UTF-8", "-q", "-", "-") //nolint:gosec // see comment: fixed args, operator-configured binary, stdin input
 	cmd.Stdin = bytes.NewReader(data)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout := &capWriter{limit: e.maxOut(), cancel: cancel}
+	stderr := &truncWriter{limit: stderrCapBytes}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	runErr := cmd.Run()
 
+	// Output cap is checked first: exceeding it kills the process (via cancel), so
+	// the resulting run error / cctx cancellation would otherwise be misread below.
+	if stdout.exceeded {
+		return nil, fmt.Errorf("%w (%d bytes)", ErrOutputTooLarge, e.maxOut())
+	}
 	// Caller cancellation/deadline takes priority and is not a malformed source.
 	if ctx.Err() != nil {
 		return nil, fmt.Errorf("pdftotext: canceled: %w", ctx.Err())
@@ -149,3 +182,48 @@ func splitPages(out string) []pdf.Page {
 	}
 	return pages
 }
+
+// capWriter buffers child stdout up to limit bytes; the first write that would
+// exceed the cap kills the process (via cancel) and fails, so a PDF that expands
+// to enormous text cannot grow the heap unbounded. It is written only by the
+// exec copy goroutine, so it needs no locking.
+type capWriter struct {
+	buf      bytes.Buffer
+	n        int64
+	limit    int64
+	cancel   context.CancelFunc
+	exceeded bool
+}
+
+func (w *capWriter) Write(p []byte) (int, error) {
+	if w.exceeded || w.n+int64(len(p)) > w.limit {
+		w.exceeded = true
+		w.cancel() // stop pdftotext from producing more output
+		return 0, ErrOutputTooLarge
+	}
+	n, err := w.buf.Write(p)
+	w.n += int64(n)
+	return n, err //nolint:wrapcheck // bytes.Buffer.Write never errors; pass-through
+}
+
+func (w *capWriter) String() string { return w.buf.String() }
+
+// truncWriter captures up to limit bytes and silently drops the rest, always
+// reporting a full write so the process is never stalled by a bounded stderr.
+type truncWriter struct {
+	buf   bytes.Buffer
+	limit int
+}
+
+func (w *truncWriter) Write(p []byte) (int, error) {
+	if rem := w.limit - w.buf.Len(); rem > 0 {
+		if len(p) <= rem {
+			w.buf.Write(p)
+		} else {
+			w.buf.Write(p[:rem])
+		}
+	}
+	return len(p), nil
+}
+
+func (w *truncWriter) String() string { return w.buf.String() }

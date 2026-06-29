@@ -4,9 +4,11 @@
 // behavior.
 //
 // Importing this package pulls in every bundled format's dependencies (e.g.
-// golang.org/x/net for HTML, dslipak/pdf for PDF) — that is the trade for the
-// one-call convenience. Apps that want a leaner import tree register only the
-// formats they use against extract.NewRegistry directly. A depguard rule keeps
+// golang.org/x/net for HTML) and wires the out-of-process pdftotext PDF engine
+// (which needs the Poppler binary at runtime) — that is the trade for the
+// one-call convenience. Apps that want a leaner import tree or a different PDF
+// engine register only the formats they use against extract.NewRegistry
+// directly. A depguard rule keeps
 // core packages from importing this bundle (see
 // docs/adr/0006-optional-adapters-as-subpackages.md).
 //
