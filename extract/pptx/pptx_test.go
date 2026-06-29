@@ -42,9 +42,47 @@ func relsXML(notesTarget string) string {
 		`</Relationships>`
 }
 
-// makePptx synthesizes a minimal .pptx archive from the given slides, writing
-// parts in the order provided (so tests can prove numeric, not lexical, sort).
+// presentationXMLDoc builds ppt/presentation.xml whose sldIdLst lists the given
+// slide numbers in order, each referencing slideN.xml by relationship id rId{k}.
+func presentationXMLDoc(order []int) string {
+	var b strings.Builder
+	b.WriteString(`<?xml version="1.0"?><p:presentation xmlns:p="urn:p" ` +
+		`xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><p:sldIdLst>`)
+	for k := range order {
+		b.WriteString(fmt.Sprintf(`<p:sldId id="%d" r:id="rId%d"/>`, 256+k, k+1))
+	}
+	b.WriteString(`</p:sldIdLst></p:presentation>`)
+	return b.String()
+}
+
+// presentationRelsDoc builds ppt/_rels/presentation.xml.rels mapping rId{k} to
+// slides/slide{num}.xml, matching presentationXMLDoc's ids.
+func presentationRelsDoc(order []int) string {
+	var b strings.Builder
+	b.WriteString(`<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">`)
+	for k, num := range order {
+		b.WriteString(fmt.Sprintf(
+			`<Relationship Id="rId%d" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide%d.xml"/>`,
+			k+1, num))
+	}
+	b.WriteString(`</Relationships>`)
+	return b.String()
+}
+
+// makePptx synthesizes a minimal .pptx archive from the given slides. With no
+// presentation order it omits ppt/presentation.xml, exercising the filename-order
+// fallback; see makePptxOrdered for the presentation-order path.
 func makePptx(t *testing.T, entries ...slideEntry) []byte {
+	return buildPptx(t, nil, entries)
+}
+
+// makePptxOrdered is makePptx plus a ppt/presentation.xml whose sldIdLst lists
+// the given slide numbers in presentation order.
+func makePptxOrdered(t *testing.T, order []int, entries ...slideEntry) []byte {
+	return buildPptx(t, order, entries)
+}
+
+func buildPptx(t *testing.T, order []int, entries []slideEntry) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
@@ -64,6 +102,10 @@ func makePptx(t *testing.T, entries ...slideEntry) []byte {
 			write(fmt.Sprintf("ppt/slides/_rels/slide%d.xml.rels", e.num),
 				relsXML(fmt.Sprintf("../notesSlides/notesSlide%d.xml", e.num)))
 		}
+	}
+	if order != nil {
+		write("ppt/presentation.xml", presentationXMLDoc(order))
+		write("ppt/_rels/presentation.xml.rels", presentationRelsDoc(order))
 	}
 	if err := zw.Close(); err != nil {
 		t.Fatalf("zip close: %v", err)
@@ -90,17 +132,53 @@ func extractText(t *testing.T, data []byte) string {
 	return a.Text
 }
 
-func TestExtractSlidesInNumericOrder(t *testing.T) {
-	// Written 10, 2, 1 — must come back 1, 2, 10 (numeric, not lexical).
+func assertOrder(t *testing.T, got string, want ...string) {
+	t.Helper()
+	last := -1
+	for _, s := range want {
+		i := strings.Index(got, s)
+		if i < 0 {
+			t.Fatalf("%q missing from output %q", s, got)
+		}
+		if i <= last {
+			t.Fatalf("%q out of order in %q (want %v)", s, got, want)
+		}
+		last = i
+	}
+}
+
+func TestExtractFilenameOrderFallback(t *testing.T) {
+	// No ppt/presentation.xml → fall back to numeric filename order. Written
+	// 10, 2, 1 — must come back 1, 2, 10 (numeric, not lexical).
 	data := makePptx(t,
 		slideEntry{num: 10, body: []string{"ten"}},
 		slideEntry{num: 2, body: []string{"two"}},
 		slideEntry{num: 1, body: []string{"one"}},
 	)
-	got := extractText(t, data)
-	if idxOne, idxTwo, idxTen := strings.Index(got, "one"), strings.Index(got, "two"), strings.Index(got, "ten"); !(idxOne < idxTwo && idxTwo < idxTen) {
-		t.Fatalf("slide order wrong: %q (one=%d two=%d ten=%d)", got, idxOne, idxTwo, idxTen)
-	}
+	assertOrder(t, extractText(t, data), "one", "two", "ten")
+}
+
+func TestExtractPresentationOrderOverridesFilenames(t *testing.T) {
+	// Filenames are 1=A, 2=B, 3=C but the deck presents them 3, 1, 2 (a reordered
+	// deck that kept its part filenames). Presentation order must win.
+	data := makePptxOrdered(t, []int{3, 1, 2},
+		slideEntry{num: 1, body: []string{"alpha"}},
+		slideEntry{num: 2, body: []string{"bravo"}},
+		slideEntry{num: 3, body: []string{"charlie"}},
+	)
+	assertOrder(t, extractText(t, data), "charlie", "alpha", "bravo")
+}
+
+func TestExtractOrphanSlidesAppended(t *testing.T) {
+	// The presentation lists only slides 2 and 1; slide 3 exists but is
+	// unreferenced. Referenced slides come first in deck order, then the orphan —
+	// no slide is dropped.
+	data := makePptxOrdered(t, []int{2, 1},
+		slideEntry{num: 1, body: []string{"alpha"}},
+		slideEntry{num: 2, body: []string{"bravo"}},
+		slideEntry{num: 3, body: []string{"orphan"}},
+	)
+	assertOrder(t, extractText(t, data), "bravo", "alpha", "orphan")
 }
 
 func TestExtractParagraphsSeparated(t *testing.T) {

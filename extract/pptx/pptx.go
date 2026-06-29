@@ -4,13 +4,21 @@
 // A .pptx is a ZIP archive of XML. Slide text lives in ppt/slides/slideN.xml and
 // is carried by DrawingML text runs (<a:t>) inside paragraphs (<a:p>) — the same
 // local element names DOCX uses, so the decode is shared in spirit with the docx
-// extractor. This extractor unzips in memory, walks slides in slide-number order,
+// extractor. This extractor unzips in memory, walks slides in presentation order,
 // and for each slide appends its body text followed by its speaker notes (if any).
-// Notes are associated to their slide through the slide's relationships
+//
+// Slide order comes from ppt/presentation.xml's slide-id list resolved through
+// ppt/_rels/presentation.xml.rels — the order the deck actually presents, which
+// can differ from the slideN.xml filename numbers after a deck is reordered. If
+// those parts are missing or unparseable, it falls back to numeric filename
+// order; any slide parts not referenced by the presentation are appended after
+// the ordered ones so no slide is silently dropped.
+//
+// Notes are associated to their slide through the slide's own relationships
 // (ppt/slides/_rels/slideN.xml.rels → a notesSlide target), so a note stays with
-// the slide it belongs to rather than being guessed by filename. The result is a
-// single text/plain artifact in the same shape as the core text extractor, with
-// blank lines between paragraphs so the boundary-aware chunker sees structure.
+// the slide it belongs to. The result is a single text/plain artifact in the
+// same shape as the core text extractor, with blank lines between paragraphs so
+// the boundary-aware chunker sees structure.
 //
 // Like docx, this needs no third-party dependency (stdlib archive/zip +
 // encoding/xml) but stays a subpackage so all formats are uniformly opt-in
@@ -18,11 +26,9 @@
 //
 //	reg.Register("application/vnd.openxmlformats-officedocument.presentationml.presentation", pptx.New())
 //
-// Scope is slide body text plus speaker notes. Slide order is taken from the
-// slideN.xml filename number (the common case), not resolved through
-// presentation.xml's slide-id list. Masters, layouts, comments, and embedded
-// objects are not extracted; that can be added later by parsing more archive
-// parts.
+// Scope is slide body text plus speaker notes. Masters, layouts, comments, and
+// embedded objects are not extracted; that can be added later by parsing more
+// archive parts.
 package pptx
 
 import (
@@ -46,20 +52,27 @@ import (
 const MediaType content.MediaType = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 
 const (
+	// presentationDir is the archive directory holding the presentation parts;
+	// presentation relationship targets are relative to it.
+	presentationDir = "ppt"
 	// slidesDir is the archive directory holding slide parts.
 	slidesDir = "ppt/slides/"
 	// slidePrefix and xmlSuffix bound a slide part name: ppt/slides/slideN.xml.
 	slidePrefix = slidesDir + "slide"
 	xmlSuffix   = ".xml"
+
+	presentationPart     = "ppt/presentation.xml"
+	presentationRelsPart = "ppt/_rels/presentation.xml.rels"
+
 	// notesRelType is the relationship type linking a slide to its notes slide.
 	notesRelType = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide"
 )
 
 // DefaultMaxDecompressedBytes caps the total uncompressed XML this extractor
-// reads across all slide, notes, and relationship parts. The Registry bounds the
-// *compressed* input, but a zip bomb can expand far beyond that, so the
-// uncompressed stream needs its own ceiling. 64 MiB is far larger than any
-// realistic deck's text parts while still bounding memory.
+// reads across all parts (presentation, slides, notes, relationships). The
+// Registry bounds the *compressed* input, but a zip bomb can expand far beyond
+// that, so the uncompressed stream needs its own ceiling. 64 MiB is far larger
+// than any realistic deck's text parts while still bounding memory.
 const DefaultMaxDecompressedBytes int64 = 64 << 20 // 64 MiB
 
 // errDecompressedTooLarge is returned by the capping reader when uncompressed
@@ -90,13 +103,14 @@ func (e Extractor) maxDecompressed() int64 {
 
 // Extract reads r as a .pptx archive and returns a single text/plain artifact
 // derived from parentID: each slide's body text followed by its speaker notes,
-// slides in slide-number order, paragraphs separated by blank lines. It honors
+// slides in presentation order, paragraphs separated by blank lines. It honors
 // ctx cancellation while reading. It returns:
 //
 //   - extract.ErrNoContent if the deck parses cleanly but has no slide/notes text;
 //   - an error matching extract.ErrMalformedSource if the archive is not a valid
-//     zip, contains no slides, contains unparseable XML, or whose parts
-//     decompress past MaxDecompressedBytes (a zip bomb).
+//     zip, contains no slides, contains unparseable XML, declares a notes slide
+//     whose target is missing, or whose parts decompress past
+//     MaxDecompressedBytes (a zip bomb).
 func (e Extractor) Extract(ctx context.Context, r io.Reader, parentID string) ([]content.Artifact, error) {
 	data, err := extract.ReadAll(ctx, r)
 	if err != nil {
@@ -113,7 +127,13 @@ func (e Extractor) Extract(ctx context.Context, r io.Reader, parentID string) ([
 		byName[f.Name] = f
 	}
 
-	slides := sortedSlides(zr)
+	pd := &partDecoder{remaining: e.maxDecompressed()}
+
+	ordered, err := pd.presentationOrder(byName)
+	if err != nil {
+		return nil, err
+	}
+	slides := resolveOrder(ordered, sortedSlides(zr), byName)
 	if len(slides) == 0 {
 		return nil, &extract.MalformedSourceError{
 			MediaType: MediaType,
@@ -121,19 +141,18 @@ func (e Extractor) Extract(ctx context.Context, r io.Reader, parentID string) ([
 		}
 	}
 
-	pd := &partDecoder{remaining: e.maxDecompressed()}
 	var b strings.Builder
-	for _, s := range slides {
+	for _, sf := range slides {
 		if err := ctx.Err(); err != nil {
 			return nil, err //nolint:wrapcheck // sentinel ctx error; surfaced to caller as-is
 		}
-		slideText, err := pd.decode(ctx, s.file)
+		slideText, err := pd.decode(ctx, sf)
 		if err != nil {
 			return nil, err
 		}
 		b.WriteString(slideText)
 
-		notes, hasNotes, err := pd.notesFor(byName, s.num)
+		notes, hasNotes, err := pd.notesFor(byName, sf.Name)
 		if err != nil {
 			return nil, err
 		}
@@ -161,12 +180,13 @@ type slide struct {
 
 // sortedSlides returns the slide parts (ppt/slides/slideN.xml) in ascending
 // slide-number order. Numeric sort matters: lexical order would put slide10
-// before slide2. Names without a numeric suffix (e.g. nested _rels paths) are
-// skipped.
+// before slide2. Names without a numeric suffix are skipped. This is the
+// fallback ordering and the source of orphan slides not named in the
+// presentation.
 func sortedSlides(zr *zip.Reader) []slide {
 	out := make([]slide, 0, len(zr.File))
 	for _, f := range zr.File {
-		if !strings.HasPrefix(f.Name, slidePrefix) || !strings.HasSuffix(f.Name, xmlSuffix) {
+		if !isSlidePart(f.Name) {
 			continue
 		}
 		mid := f.Name[len(slidePrefix) : len(f.Name)-len(xmlSuffix)]
@@ -180,10 +200,125 @@ func sortedSlides(zr *zip.Reader) []slide {
 	return out
 }
 
+// isSlidePart reports whether name is a ppt/slides/slideN.xml part (and not, say,
+// a _rels entry under ppt/slides/).
+func isSlidePart(name string) bool {
+	return strings.HasPrefix(name, slidePrefix) && strings.HasSuffix(name, xmlSuffix)
+}
+
+// resolveOrder produces the final ordered slide files: the parts named by the
+// presentation (in its order), followed by any actual slide parts the
+// presentation did not reference (in filename order), so a reordered deck reads
+// correctly and no slide is dropped. With a nil ordered list (no usable
+// presentation), it is exactly the filename order.
+func resolveOrder(ordered []string, fileSlides []slide, byName map[string]*zip.File) []*zip.File {
+	seen := make(map[string]bool, len(fileSlides))
+	out := make([]*zip.File, 0, len(fileSlides))
+	for _, name := range ordered {
+		if !isSlidePart(name) || seen[name] {
+			continue
+		}
+		if f, ok := byName[name]; ok {
+			out = append(out, f)
+			seen[name] = true
+		}
+	}
+	for i := range fileSlides {
+		if name := fileSlides[i].file.Name; !seen[name] {
+			out = append(out, fileSlides[i].file)
+			seen[name] = true
+		}
+	}
+	return out
+}
+
+// presentationXML models the slide-id list: each sldId references a slide by its
+// relationship id (the r:id attribute, in the relationships namespace).
+type presentationXML struct {
+	XMLName  xml.Name `xml:"presentation"`
+	SlideIDs []struct {
+		RID string `xml:"http://schemas.openxmlformats.org/officeDocument/2006/relationships id,attr"`
+	} `xml:"sldIdLst>sldId"`
+}
+
+// relationships models the subset of a .rels part we need.
+type relationships struct {
+	XMLName xml.Name `xml:"Relationships"`
+	Rels    []struct {
+		ID     string `xml:"Id,attr"`
+		Type   string `xml:"Type,attr"`
+		Target string `xml:"Target,attr"`
+	} `xml:"Relationship"`
+}
+
 // partDecoder decodes archive parts while enforcing a single decompressed-byte
 // budget shared across every part it reads.
 type partDecoder struct {
 	remaining int64
+}
+
+// presentationOrder returns the slide part names in presentation order, or nil to
+// signal "fall back to filename order" when the presentation parts are absent or
+// unparseable. It returns an error only when reading trips the decompressed
+// budget (a malformed/hostile archive). Reads are charged against the budget.
+func (pd *partDecoder) presentationOrder(byName map[string]*zip.File) ([]string, error) {
+	pres, ok := byName[presentationPart]
+	if !ok {
+		return nil, nil
+	}
+	relsF, ok := byName[presentationRelsPart]
+	if !ok {
+		return nil, nil
+	}
+
+	presData, err := pd.readPart(pres)
+	if err != nil {
+		return nil, err
+	}
+	relsData, err := pd.readPart(relsF)
+	if err != nil {
+		return nil, err
+	}
+
+	var p presentationXML
+	if err := xml.Unmarshal(presData, &p); err != nil || len(p.SlideIDs) == 0 {
+		return nil, nil //nolint:nilerr // unparseable/empty presentation → fall back to filename order, not a hard error (no content is lost)
+	}
+	var rels relationships
+	if err := xml.Unmarshal(relsData, &rels); err != nil {
+		return nil, nil //nolint:nilerr // unparseable presentation rels → fall back to filename order
+	}
+	relMap := make(map[string]string, len(rels.Rels))
+	for i := range rels.Rels {
+		relMap[rels.Rels[i].ID] = rels.Rels[i].Target
+	}
+
+	out := make([]string, 0, len(p.SlideIDs))
+	for i := range p.SlideIDs {
+		if target, ok := relMap[p.SlideIDs[i].RID]; ok {
+			// Targets are relative to the presentation part's directory (ppt/).
+			out = append(out, path.Join(presentationDir, target))
+		}
+	}
+	return out, nil
+}
+
+// readPart reads an entire archive part into memory, charging it against the
+// shared budget. Exceeding the budget surfaces as ErrMalformedSource.
+func (pd *partDecoder) readPart(f *zip.File) ([]byte, error) {
+	rc, err := f.Open()
+	if err != nil {
+		return nil, &extract.MalformedSourceError{MediaType: MediaType, Err: err}
+	}
+	defer func() { _ = rc.Close() }()
+
+	cr := &cappedReader{r: rc, remaining: pd.remaining}
+	data, err := io.ReadAll(cr)
+	pd.remaining = cr.remaining
+	if err != nil {
+		return nil, &extract.MalformedSourceError{MediaType: MediaType, Err: err}
+	}
+	return data, nil
 }
 
 // decode stream-parses an OOXML drawing part, concatenating <a:t> run text and
@@ -235,57 +370,36 @@ func (pd *partDecoder) decode(ctx context.Context, f *zip.File) (string, error) 
 	return b.String(), nil
 }
 
-// relationships models the subset of a .rels part we need: each Relationship's
-// type and target.
-type relationships struct {
-	XMLName xml.Name `xml:"Relationships"`
-	Rels    []struct {
-		Type   string `xml:"Type,attr"`
-		Target string `xml:"Target,attr"`
-	} `xml:"Relationship"`
-}
-
-// notesFor returns the notes-slide part associated with slide number num, with
-// found reporting whether one exists. It reads ppt/slides/_rels/slideN.xml.rels,
-// finds the notesSlide relationship, and resolves its (slide-relative) target to
-// an archive path. Reading the rels part is charged against the shared budget.
-func (pd *partDecoder) notesFor(byName map[string]*zip.File, num int) (f *zip.File, found bool, err error) {
-	relsName := slidesDir + "_rels/slide" + strconv.Itoa(num) + ".xml.rels"
+// notesFor returns the notes-slide part associated with the slide part named
+// slideName, with found reporting whether one exists. It reads the slide's own
+// relationships part, finds the notesSlide relationship, and resolves its
+// (slide-relative) target. A declared notesSlide whose target is missing from the
+// archive is a corrupt deck and surfaces as ErrMalformedSource rather than being
+// silently dropped; a slide with no notesSlide relationship simply has no notes.
+func (pd *partDecoder) notesFor(byName map[string]*zip.File, slideName string) (*zip.File, bool, error) {
+	dir := path.Dir(slideName)
+	relsName := dir + "/_rels/" + path.Base(slideName) + ".rels"
 	rels, ok := byName[relsName]
 	if !ok {
 		return nil, false, nil // no relationships for this slide → no notes
 	}
 
-	rc, err := rels.Open()
+	data, err := pd.readPart(rels)
 	if err != nil {
-		return nil, false, &extract.MalformedSourceError{MediaType: MediaType, Err: err}
+		return nil, false, err
 	}
-	defer func() { _ = rc.Close() }()
-
-	cr := &cappedReader{r: rc, remaining: pd.remaining}
-	data, err := io.ReadAll(cr)
-	pd.remaining = cr.remaining
-	if err != nil {
-		return nil, false, &extract.MalformedSourceError{MediaType: MediaType, Err: err}
-	}
-
 	var rel relationships
 	if err := xml.Unmarshal(data, &rel); err != nil {
 		return nil, false, &extract.MalformedSourceError{MediaType: MediaType, Err: err}
 	}
 	for i := range rel.Rels {
 		if rel.Rels[i].Type == notesRelType {
-			// Targets are relative to the slide part's directory (ppt/slides/).
-			target := path.Join(slidesDir, rel.Rels[i].Target)
+			target := path.Join(dir, rel.Rels[i].Target)
 			nf, ok := byName[target]
 			if !ok {
-				// The slide declares a notes slide but its target is absent (or
-				// escapes the archive). A valid .pptx always ships the target, so
-				// this is a corrupt archive, not a slide that simply has no notes —
-				// surface it rather than silently dropping the notes.
 				return nil, false, &extract.MalformedSourceError{
 					MediaType: MediaType,
-					Err:       fmt.Errorf("slide %d notes target %q not found in archive", num, target),
+					Err:       fmt.Errorf("notes target %q for slide %q not found in archive", target, slideName),
 				}
 			}
 			return nf, true, nil
