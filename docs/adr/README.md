@@ -19,3 +19,5 @@ described in an ADR without superseding it.
   watchdog as a stopgap for a hanging parser (supersede after the spike).
 - [0008](0008-markdown-verbatim-and-heading-chunking.md) — Markdown is extracted
   verbatim and chunked by heading (ancestry deferred to the graph).
+- [0009](0009-spreadsheet-xlsx-ingestion.md) — Spreadsheet (XLSX) ingestion:
+  faithful extraction in the library, semantics in the app (deferred).
