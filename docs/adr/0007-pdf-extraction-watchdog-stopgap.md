@@ -1,6 +1,6 @@
 # ADR 0007: PDF extraction uses a timeout watchdog as a stopgap for a hanging parser
 
-- Status: Accepted (stopgap — supersede after the spike)
+- Status: Superseded by [ADR 0010](0010-pluggable-pdf-engines.md) (pluggable PDF engines; out-of-process pdftotext)
 - Date: 2026-06-02
 
 ## Context

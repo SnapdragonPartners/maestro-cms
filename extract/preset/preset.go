@@ -20,6 +20,7 @@ import (
 	"github.com/SnapdragonPartners/maestro-cms/extract/html"
 	"github.com/SnapdragonPartners/maestro-cms/extract/markdown"
 	"github.com/SnapdragonPartners/maestro-cms/extract/pdf"
+	"github.com/SnapdragonPartners/maestro-cms/extract/pdf/pdftotext"
 	"github.com/SnapdragonPartners/maestro-cms/extract/pptx"
 )
 
@@ -31,10 +32,16 @@ const mediaTypeHTML content.MediaType = "text/html"
 // HTML, PDF, DOCX, PPTX, and Markdown (both text/markdown and text/x-markdown).
 // It follows extract.Registry.Register's semantics and so panics if a media type
 // is already registered on r.
+//
+// PDF uses the out-of-process pdftotext engine (the recommended production
+// engine), which requires the Poppler pdftotext binary at runtime; extraction
+// returns pdftotext.ErrEngineUnavailable if it is absent. Consumers that want a
+// different engine (e.g. the pure-Go fallback) should build their own registry
+// instead of using this bundle.
 func RegisterDocuments(r *extract.Registry) {
 	r.Register(extract.MediaTypeText, extract.NewTextExtractor())
 	r.Register(mediaTypeHTML, html.New())
-	r.Register(pdf.MediaType, pdf.New())
+	r.Register(pdf.MediaType, pdf.New(pdf.WithEngine(pdftotext.New())))
 	r.Register(docx.MediaType, docx.New())
 	r.Register(pptx.MediaType, pptx.New())
 	r.Register(markdown.MediaType, markdown.New())
