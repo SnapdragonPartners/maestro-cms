@@ -20,6 +20,7 @@ import (
 	"github.com/SnapdragonPartners/maestro-cms/extract/html"
 	"github.com/SnapdragonPartners/maestro-cms/extract/markdown"
 	"github.com/SnapdragonPartners/maestro-cms/extract/pdf"
+	"github.com/SnapdragonPartners/maestro-cms/extract/pptx"
 )
 
 // mediaTypeHTML is the media type for HTML sources; the html subpackage exposes
@@ -27,14 +28,15 @@ import (
 const mediaTypeHTML content.MediaType = "text/html"
 
 // RegisterDocuments registers the common document extractors on r: plain text,
-// HTML, PDF, DOCX, and Markdown (both text/markdown and text/x-markdown). It
-// follows extract.Registry.Register's semantics and so panics if a media type is
-// already registered on r.
+// HTML, PDF, DOCX, PPTX, and Markdown (both text/markdown and text/x-markdown).
+// It follows extract.Registry.Register's semantics and so panics if a media type
+// is already registered on r.
 func RegisterDocuments(r *extract.Registry) {
 	r.Register(extract.MediaTypeText, extract.NewTextExtractor())
 	r.Register(mediaTypeHTML, html.New())
 	r.Register(pdf.MediaType, pdf.New())
 	r.Register(docx.MediaType, docx.New())
+	r.Register(pptx.MediaType, pptx.New())
 	r.Register(markdown.MediaType, markdown.New())
 	r.Register(markdown.MediaTypeX, markdown.New())
 }

@@ -16,6 +16,7 @@ func TestNewDocumentRegistrySupportsAll(t *testing.T) {
 	for _, mt := range []content.MediaType{
 		"text/plain", "text/html", "application/pdf",
 		"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		"application/vnd.openxmlformats-officedocument.presentationml.presentation",
 		"text/markdown", "text/x-markdown",
 	} {
 		if !reg.Supports(mt) {
@@ -28,6 +29,7 @@ func TestSupportedDocumentMediaTypesSorted(t *testing.T) {
 	got := preset.SupportedDocumentMediaTypes()
 	want := []content.MediaType{
 		"application/pdf",
+		"application/vnd.openxmlformats-officedocument.presentationml.presentation",
 		"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 		"text/html",
 		"text/markdown",
