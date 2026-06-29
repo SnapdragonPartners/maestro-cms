@@ -31,6 +31,7 @@ import (
 	"context"
 	"encoding/xml"
 	"errors"
+	"fmt"
 	"io"
 	"path"
 	"sort"
@@ -277,10 +278,20 @@ func (pd *partDecoder) notesFor(byName map[string]*zip.File, num int) (f *zip.Fi
 			// Targets are relative to the slide part's directory (ppt/slides/).
 			target := path.Join(slidesDir, rel.Rels[i].Target)
 			nf, ok := byName[target]
-			return nf, ok, nil // ok=false if the target is missing
+			if !ok {
+				// The slide declares a notes slide but its target is absent (or
+				// escapes the archive). A valid .pptx always ships the target, so
+				// this is a corrupt archive, not a slide that simply has no notes —
+				// surface it rather than silently dropping the notes.
+				return nil, false, &extract.MalformedSourceError{
+					MediaType: MediaType,
+					Err:       fmt.Errorf("slide %d notes target %q not found in archive", num, target),
+				}
+			}
+			return nf, true, nil
 		}
 	}
-	return nil, false, nil
+	return nil, false, nil // no notesSlide relationship → the slide has no notes
 }
 
 // cappedReader returns errDecompressedTooLarge once more than the permitted

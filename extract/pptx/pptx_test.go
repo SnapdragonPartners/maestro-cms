@@ -175,6 +175,26 @@ func TestExtractContextCanceled(t *testing.T) {
 	}
 }
 
+func TestExtractDanglingNotesTargetIsMalformed(t *testing.T) {
+	// A slide declares a notesSlide relationship, but the target part is absent —
+	// a corrupt archive. It must surface as malformed, not silently drop notes.
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	write := func(name, content string) {
+		w, _ := zw.Create(name)
+		_, _ = w.Write([]byte(content))
+	}
+	write("ppt/slides/slide1.xml", drawingXML([]string{"body"}))
+	write("ppt/slides/_rels/slide1.xml.rels", relsXML("../notesSlides/notesSlide1.xml"))
+	// Intentionally omit ppt/notesSlides/notesSlide1.xml.
+	_ = zw.Close()
+
+	_, err := pptx.Extractor{}.Extract(context.Background(), bytes.NewReader(buf.Bytes()), "src-1")
+	if !errors.Is(err, extract.ErrMalformedSource) {
+		t.Fatalf("err = %v, want ErrMalformedSource", err)
+	}
+}
+
 func TestExtractZipBombBounded(t *testing.T) {
 	// A slide whose decompressed text exceeds a tiny cap surfaces as malformed.
 	big := strings.Repeat("A", 4096)
