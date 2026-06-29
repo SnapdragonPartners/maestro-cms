@@ -115,10 +115,18 @@ func (e *Engine) Pages(ctx context.Context, data []byte) ([]pdf.Page, error) {
 		}
 	}
 	if runErr != nil {
-		return nil, &extract.MalformedSourceError{
-			MediaType: pdf.MediaType,
-			Err:       fmt.Errorf("pdftotext failed: %w: %s", runErr, strings.TrimSpace(stderr.String())),
+		// A non-zero exit means pdftotext ran and rejected the input → the PDF is
+		// malformed. Any other error means we could not start/execute the binary
+		// (permissions, fork failure, …) → an operational error, not a bad PDF, so
+		// it must not match ErrMalformedSource (callers fall back/diagnose on it).
+		var exitErr *exec.ExitError
+		if errors.As(runErr, &exitErr) {
+			return nil, &extract.MalformedSourceError{
+				MediaType: pdf.MediaType,
+				Err:       fmt.Errorf("pdftotext exited %d: %s", exitErr.ExitCode(), strings.TrimSpace(stderr.String())),
+			}
 		}
+		return nil, fmt.Errorf("pdftotext: exec failed: %w", runErr)
 	}
 	return splitPages(stdout.String()), nil
 }

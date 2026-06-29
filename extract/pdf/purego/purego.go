@@ -73,14 +73,31 @@ func (e *Engine) Pages(ctx context.Context, data []byte) ([]pdf.Page, error) {
 
 	select {
 	case res := <-ch:
-		return res.pages, res.err
+		// select picks randomly among ready cases, so a result landing at the same
+		// instant as cancellation/timeout could otherwise win nondeterministically.
+		// Re-check both, prioritizing cancel > timeout > result, so the configured
+		// limits are honored deterministically.
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("purego: canceled: %w", err)
+		}
+		select {
+		case <-timer.C:
+			return nil, e.timeoutErr()
+		default:
+			return res.pages, res.err
+		}
 	case <-ctx.Done():
 		return nil, fmt.Errorf("purego: canceled: %w", ctx.Err())
 	case <-timer.C:
-		return nil, &extract.MalformedSourceError{
-			MediaType: pdf.MediaType,
-			Err:       fmt.Errorf("purego pdf extraction exceeded %s (parser hang)", e.timeout()),
-		}
+		return nil, e.timeoutErr()
+	}
+}
+
+// timeoutErr is the malformed-source error returned when the watchdog fires.
+func (e *Engine) timeoutErr() error {
+	return &extract.MalformedSourceError{
+		MediaType: pdf.MediaType,
+		Err:       fmt.Errorf("purego pdf extraction exceeded %s (parser hang)", e.timeout()),
 	}
 }
 
