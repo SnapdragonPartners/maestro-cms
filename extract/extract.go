@@ -5,8 +5,8 @@
 // other format is an opt-in subpackage so that importing this package pulls only
 // the standard library (see docs/adr/0006-optional-adapters-as-subpackages.md):
 // HTML (golang.org/x/net/html) and PDF (dslipak/pdf) carry third-party
-// dependencies, while DOCX and Markdown are stdlib-only but stay subpackages so
-// formats are uniformly opt-in. Markdown in particular must not use the core
+// dependencies, while DOCX, PPTX, and Markdown are stdlib-only but stay
+// subpackages so formats are uniformly opt-in. Markdown in particular must not use the core
 // text path: its whitespace is semantic (indented code, nested lists, hard
 // breaks), so extract/markdown preserves the body verbatim rather than applying
 // prose normalization.
