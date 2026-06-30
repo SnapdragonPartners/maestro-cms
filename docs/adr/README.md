@@ -19,5 +19,7 @@ described in an ADR without superseding it.
   stopgap (superseded by ADR 0010).
 - [0008](0008-markdown-verbatim-and-heading-chunking.md) — Markdown is extracted
   verbatim and chunked by heading (ancestry deferred to the graph).
+- [0009](0009-spreadsheet-xlsx-ingestion.md) — Spreadsheet (XLSX) ingestion:
+  faithful extraction in the library, semantics in the app (deferred).
 - [0010](0010-pluggable-pdf-engines.md) — PDF extraction uses pluggable engines;
   out-of-process pdftotext recommended, pure-Go fallback, no unsafe default.
