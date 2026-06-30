@@ -15,7 +15,9 @@ described in an ADR without superseding it.
   content needs only stable IDs.
 - [0006](0006-optional-adapters-as-subpackages.md) — Optional adapters live in
   subpackages; core stays dependency-free.
-- [0007](0007-pdf-extraction-watchdog-stopgap.md) — PDF extraction uses a timeout
-  watchdog as a stopgap for a hanging parser (supersede after the spike).
+- [0007](0007-pdf-extraction-watchdog-stopgap.md) — PDF extraction watchdog
+  stopgap (superseded by ADR 0010).
 - [0008](0008-markdown-verbatim-and-heading-chunking.md) — Markdown is extracted
   verbatim and chunked by heading (ancestry deferred to the graph).
+- [0010](0010-pluggable-pdf-engines.md) — PDF extraction uses pluggable engines;
+  out-of-process pdftotext recommended, pure-Go fallback, no unsafe default.

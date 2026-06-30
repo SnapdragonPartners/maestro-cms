@@ -1,46 +1,34 @@
-// Package pdf extracts text from PDF sources.
+// Package pdf extracts text from PDF sources through a pluggable engine.
 //
-// It is an opt-in subpackage so the core extract package stays standard-library
-// only: importing this package pulls in github.com/dslipak/pdf (pure Go, no
-// CGO) (see docs/adr/0006-optional-adapters-as-subpackages.md). Wire it into a
-// registry with:
+// PDF parsing is hard to do safely — pure-Go parsers are immature (they can hang
+// on adversarial input), and the robust C/C++ engines carry CGO and copyleft
+// licensing. So this package defines an Engine interface and an Extractor that
+// delegates to one; the engines live in subpackages so importing extract/pdf
+// pulls no parser dependency:
 //
-//	reg.Register("application/pdf", pdf.New())
+//   - extract/pdf/pdftotext — out-of-process Poppler (pdftotext) — recommended
+//     for production/untrusted input: a crafted PDF that hangs or crashes dies in
+//     a child process the engine kills, with no in-process blast radius.
+//   - extract/pdf/purego — pure-Go (dslipak/pdf) — a no-system-dependency
+//     fallback for SMALL, TRUSTED input only; it can hang on malformed PDFs.
 //
-// Extraction is text-stream based: it reads the embedded text of each page and
-// joins pages with a blank line so the downstream boundary-aware chunker sees
-// page boundaries. It does NOT perform OCR — an image-only (scanned) PDF yields
-// no text and returns extract.ErrNoContent. The result is a single text/plain
-// artifact in the same shape as the core text extractor.
+// There is deliberately **no default engine**: an unconfigured Extractor returns
+// ErrNoEngine rather than silently choosing a parser known to hang. Wire one in:
 //
-// # Safety stopgap (read before depending on this)
+//	reg.Register(pdf.MediaType, pdf.New(pdf.WithEngine(pdftotext.New())))
 //
-// The dslipak/pdf parser can HANG (not just panic) on some inputs — e.g. a page
-// with no content stream makes GetPlainText spin without returning. A hang
-// cannot be caught by recover() and ignores context cancellation, which would be
-// a denial-of-service vector for a library taking untrusted PDFs. As a stopgap,
-// Extract runs the parse in a goroutine bounded by a wall-clock Timeout and
-// returns extract.ErrMalformedSource if it elapses.
-//
-// This is a band-aid, not a fix: a timed-out parse LEAKS its goroutine (it is
-// still stuck inside the uninterruptible parser), so repeated hostile input
-// grows memory. A spike is planned to diagnose dslipak/pdf or replace it; see
-// docs/adr/0007-pdf-extraction-watchdog-stopgap.md. Until then, do not point this
-// at high-volume untrusted input without external process isolation.
-//
-// Output quality (column ordering, table flattening, font-encoding fidelity) is
-// also unvalidated against a real corpus.
+// Output is one text/plain artifact PER PAGE (page provenance matters for
+// retrieval), each tagged with its page number and the engine name in Metadata.
+// OCR is out of scope: an image-only page yields no text and is omitted; a PDF
+// with no extractable text yields extract.ErrNoContent. See
+// docs/adr/0010-pluggable-pdf-engines.md (which supersedes ADR 0007).
 package pdf
 
 import (
-	"bytes"
 	"context"
-	"fmt"
+	"errors"
 	"io"
-	"strings"
-	"time"
-
-	"github.com/dslipak/pdf"
+	"strconv"
 
 	"github.com/SnapdragonPartners/maestro-cms/content"
 	"github.com/SnapdragonPartners/maestro-cms/extract"
@@ -49,146 +37,105 @@ import (
 // MediaType is the media type this extractor handles.
 const MediaType content.MediaType = "application/pdf"
 
-// DefaultTimeout bounds a single Extract call's parsing time, guarding against
-// the dslipak/pdf hang described in the package doc.
-const DefaultTimeout = 30 * time.Second
+// Metadata keys set on each emitted artifact.
+const (
+	// MetaPage is the 1-based page number the artifact's text came from.
+	MetaPage = "pdf.page"
+	// MetaEngine is the Name() of the engine that produced the text.
+	MetaEngine = "pdf.engine"
+)
 
-// Extractor extracts text from application/pdf sources. It is safe for
-// concurrent use.
-type Extractor struct {
-	// Timeout bounds the wall-clock time spent parsing one source before Extract
-	// gives up with extract.ErrMalformedSource. Zero or negative means
-	// DefaultTimeout (a negative timer would otherwise fire immediately and fail
-	// every parse).
-	Timeout time.Duration
+// ErrNoEngine is returned by Extract when the Extractor has no engine configured.
+// PDF extraction has no safe zero-config default, so a parser must be chosen
+// explicitly via WithEngine.
+var ErrNoEngine = errors.New("pdf: no engine configured (use pdf.WithEngine)")
+
+// Page is one page's extracted text.
+type Page struct {
+	// Number is the 1-based page number in the source PDF.
+	Number int
+	// Text is the page's extracted text (may be empty for blank/image-only pages).
+	Text string
 }
 
-// New returns a PDF Extractor using DefaultTimeout.
-func New() *Extractor {
-	return &Extractor{}
-}
-
-func (e Extractor) timeout() time.Duration {
-	if e.Timeout <= 0 {
-		return DefaultTimeout
-	}
-	return e.Timeout
-}
-
-// Extract reads r as a PDF and returns a single text/plain artifact derived from
-// parentID, joining page text with blank lines. It honors ctx cancellation while
-// reading. It returns:
+// Engine extracts text per page from PDF bytes. Implementations live in
+// subpackages so extract/pdf itself stays dependency-free.
 //
-//   - extract.ErrNoContent if the PDF parses cleanly but yields no text (e.g. an
-//     image-only/scanned PDF that would need OCR);
-//   - an error matching extract.ErrMalformedSource if the PDF cannot be parsed,
-//     the parser panics, or parsing exceeds the Timeout (a hang).
+// Pages must return an error matching extract.ErrMalformedSource for input it
+// cannot parse, and a context error if ctx is canceled. Blank/image-only pages
+// may be returned with empty Text or omitted; the Extractor drops empty pages.
+type Engine interface {
+	// Name identifies the engine; it is recorded on each artifact's metadata.
+	Name() string
+	// Pages extracts text per page from the (already fully buffered) PDF bytes.
+	Pages(ctx context.Context, data []byte) ([]Page, error)
+}
+
+// Extractor extracts text from application/pdf sources via its configured Engine.
+// The zero value has no engine and returns ErrNoEngine; use New(WithEngine(...)).
+// It is safe for concurrent use if its engine is.
+type Extractor struct {
+	engine Engine
+}
+
+// Option configures an Extractor.
+type Option func(*Extractor)
+
+// WithEngine sets the PDF parsing engine. It is required — there is no default.
+func WithEngine(e Engine) Option {
+	return func(x *Extractor) { x.engine = e }
+}
+
+// New returns a PDF Extractor. Pass WithEngine to choose a parser; without one,
+// Extract returns ErrNoEngine.
+func New(opts ...Option) *Extractor {
+	x := &Extractor{}
+	for _, o := range opts {
+		o(x)
+	}
+	return x
+}
+
+// Extract reads r as a PDF and returns one text/plain artifact per non-empty
+// page, derived from parentID, each tagged with MetaPage and MetaEngine. It
+// honors ctx cancellation while reading. It returns:
+//
+//   - ErrNoEngine if no engine is configured;
+//   - extract.ErrNoContent if the PDF parses but yields no text on any page (e.g.
+//     an image-only/scanned PDF needing OCR);
+//   - an error matching extract.ErrMalformedSource if the engine cannot parse it.
 func (e Extractor) Extract(ctx context.Context, r io.Reader, parentID string) ([]content.Artifact, error) {
+	if e.engine == nil {
+		return nil, ErrNoEngine
+	}
 	data, err := extract.ReadAll(ctx, r)
 	if err != nil {
 		return nil, err
 	}
-
-	text, err := e.runBounded(ctx, data)
+	pages, err := e.engine.Pages(ctx, data)
 	if err != nil {
-		return nil, err
+		return nil, err //nolint:wrapcheck // engine returns package-appropriate errors (malformed/ctx)
 	}
 
-	text = extract.NormalizeWhitespace(text)
-	if text == "" {
-		// Clean parse, no text. We treat this as ErrNoContent (the common
-		// image-only/scanned-PDF case that wants OCR) rather than
-		// ErrMalformedSource. A subtly-corrupt PDF that parses but recovers no
-		// text is indistinguishable here and also reports ErrNoContent; only a
-		// hard parse failure or panic is classified as malformed. Revisit if a
-		// real corpus shows this conflation causes trouble.
+	name := e.engine.Name()
+	arts := make([]content.Artifact, 0, len(pages))
+	for i := range pages {
+		text := extract.NormalizeWhitespace(pages[i].Text)
+		if text == "" {
+			continue // drop blank / image-only pages rather than emit empty artifacts
+		}
+		arts = append(arts, content.Artifact{
+			MediaType:   extract.MediaTypeText,
+			DerivedFrom: parentID,
+			Text:        text,
+			Metadata: map[string]string{
+				MetaPage:   strconv.Itoa(pages[i].Number),
+				MetaEngine: name,
+			},
+		})
+	}
+	if len(arts) == 0 {
 		return nil, extract.ErrNoContent
 	}
-	return []content.Artifact{extract.TextArtifact(parentID, text)}, nil
-}
-
-// runBounded runs extractText in a goroutine and enforces the wall-clock
-// Timeout, because the parser can hang in a way that recover() and context
-// cancellation cannot interrupt (see the package doc). On timeout it returns
-// ErrMalformedSource; the worker goroutine is abandoned (leaked) since the parser
-// offers no way to stop it. The result channel is buffered so a leaked goroutine
-// can still finish its send and exit if it ever unblocks.
-func (e Extractor) runBounded(ctx context.Context, data []byte) (string, error) {
-	// If the caller already canceled, don't even launch the parser: it is
-	// uninterruptible, so starting it on a hang input would leak a goroutine for
-	// a result no one is waiting for.
-	if err := ctx.Err(); err != nil {
-		return "", fmt.Errorf("extract: pdf extraction canceled: %w", err)
-	}
-
-	type result struct {
-		text string
-		err  error
-	}
-	ch := make(chan result, 1)
-	go func() {
-		text, err := extractText(ctx, data)
-		ch <- result{text: text, err: err}
-	}()
-
-	timer := time.NewTimer(e.timeout())
-	defer timer.Stop()
-
-	select {
-	case res := <-ch:
-		return res.text, res.err
-	case <-ctx.Done():
-		return "", fmt.Errorf("extract: pdf extraction canceled: %w", ctx.Err())
-	case <-timer.C:
-		return "", &extract.MalformedSourceError{
-			MediaType: MediaType,
-			Err:       fmt.Errorf("pdf extraction exceeded %s (parser hang)", e.timeout()),
-		}
-	}
-}
-
-// extractText pulls per-page plain text from the PDF bytes, joining pages with a
-// blank line. dslipak/pdf has been observed to panic on certain malformed inputs
-// (truncated content streams, broken xref tables); a recover boundary converts
-// any panic into a MalformedSourceError. (Hangs are handled separately by
-// runBounded, since recover cannot catch them.)
-func extractText(ctx context.Context, data []byte) (text string, err error) {
-	defer func() {
-		if rec := recover(); rec != nil {
-			err = &extract.MalformedSourceError{
-				MediaType: MediaType,
-				Err:       fmt.Errorf("pdf parser panic: %v", rec),
-			}
-		}
-	}()
-
-	reader, rerr := pdf.NewReader(bytes.NewReader(data), int64(len(data)))
-	if rerr != nil {
-		return "", &extract.MalformedSourceError{MediaType: MediaType, Err: rerr}
-	}
-
-	var b strings.Builder
-	pages := reader.NumPage()
-	for n := 1; n <= pages; n++ {
-		if cerr := ctx.Err(); cerr != nil {
-			return "", fmt.Errorf("extract: pdf page loop: %w", cerr)
-		}
-		page := reader.Page(n)
-		if page.V.IsNull() {
-			continue
-		}
-		// A single unreadable page should not fail the whole document; skip it.
-		// Synthetic placeholders are deliberately not emitted (they would leak
-		// into embeddings as if they were source content). If every page fails,
-		// the empty result becomes ErrNoContent in Extract.
-		pageText, perr := page.GetPlainText(nil)
-		if perr != nil {
-			continue
-		}
-		if pageText != "" {
-			b.WriteString(pageText)
-			b.WriteString("\n\n")
-		}
-	}
-	return b.String(), nil
+	return arts, nil
 }
