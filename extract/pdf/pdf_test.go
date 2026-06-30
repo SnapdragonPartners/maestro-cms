@@ -1,108 +1,101 @@
 package pdf_test
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/SnapdragonPartners/maestro-cms/extract"
 	"github.com/SnapdragonPartners/maestro-cms/extract/pdf"
 )
 
-var _ extract.Extractor = pdf.Extractor{}
+var (
+	_ extract.Extractor = pdf.Extractor{}
+	_ extract.Extractor = pdf.New()
+)
 
-// minimalPDF builds a structurally-valid PDF with a single page that has no
-// /Contents stream. dslipak/pdf parses it (NumPage==1) but GetPlainText hangs on
-// it — this is the input that motivated the watchdog (see the package doc).
-func minimalPDF() []byte {
-	var b bytes.Buffer
-	b.WriteString("%PDF-1.4\n")
-	var offsets []int
-	obj := func(s string) { offsets = append(offsets, b.Len()); b.WriteString(s) }
-	obj("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n")
-	obj("2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n")
-	obj("3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>\nendobj\n")
-	xrefPos := b.Len()
-	fmt.Fprintf(&b, "xref\n0 %d\n", len(offsets)+1)
-	b.WriteString("0000000000 65535 f \n")
-	for _, off := range offsets {
-		fmt.Fprintf(&b, "%010d 00000 n \n", off)
-	}
-	fmt.Fprintf(&b, "trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n", len(offsets)+1, xrefPos)
-	return b.Bytes()
+// fakeEngine returns canned pages/error, exercising the Extractor without a real
+// parser or external binary.
+type fakeEngine struct {
+	name  string
+	pages []pdf.Page
+	err   error
 }
 
-// Synthesizing a valid text-bearing PDF in a test is impractical, and the
-// dslipak/pdf parser is itself untested upstream — so these tests focus on the
-// error and edge paths, which is where the risk of an untested parser actually
-// lives (the happy path will be validated against a real corpus separately).
+func (f fakeEngine) Name() string {
+	if f.name == "" {
+		return "fake"
+	}
+	return f.name
+}
 
-func TestExtractNotAPDF(t *testing.T) {
-	_, err := pdf.New().Extract(context.Background(), strings.NewReader("this is plainly not a pdf"), "s")
+func (f fakeEngine) Pages(context.Context, []byte) ([]pdf.Page, error) { return f.pages, f.err }
+
+func TestExtractNoEngineErrors(t *testing.T) {
+	_, err := pdf.New().Extract(context.Background(), strings.NewReader("%PDF-1.4"), "s")
+	if !errors.Is(err, pdf.ErrNoEngine) {
+		t.Fatalf("err = %v, want ErrNoEngine", err)
+	}
+}
+
+func TestExtractPerPageArtifacts(t *testing.T) {
+	eng := fakeEngine{name: "fake", pages: []pdf.Page{
+		{Number: 1, Text: "page one"},
+		{Number: 2, Text: "   "}, // blank → dropped
+		{Number: 3, Text: "page three"},
+	}}
+	arts, err := pdf.New(pdf.WithEngine(eng)).Extract(context.Background(), strings.NewReader("x"), "src-1")
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if len(arts) != 2 {
+		t.Fatalf("got %d artifacts, want 2 (blank page dropped)", len(arts))
+	}
+	want := []struct {
+		text, page string
+	}{{"page one", "1"}, {"page three", "3"}}
+	for i, w := range want {
+		a := arts[i]
+		if a.Text != w.text {
+			t.Fatalf("artifact %d Text = %q, want %q", i, a.Text, w.text)
+		}
+		if a.MediaType != extract.MediaTypeText {
+			t.Fatalf("artifact %d MediaType = %q, want %q", i, a.MediaType, extract.MediaTypeText)
+		}
+		if a.DerivedFrom != "src-1" || a.ID != "" {
+			t.Fatalf("artifact %d provenance: DerivedFrom=%q ID=%q", i, a.DerivedFrom, a.ID)
+		}
+		if a.Metadata[pdf.MetaPage] != w.page {
+			t.Fatalf("artifact %d page = %q, want %q", i, a.Metadata[pdf.MetaPage], w.page)
+		}
+		if a.Metadata[pdf.MetaEngine] != "fake" {
+			t.Fatalf("artifact %d engine = %q, want fake", i, a.Metadata[pdf.MetaEngine])
+		}
+	}
+}
+
+func TestExtractAllBlankIsNoContent(t *testing.T) {
+	eng := fakeEngine{pages: []pdf.Page{{Number: 1, Text: "  "}, {Number: 2, Text: ""}}}
+	_, err := pdf.New(pdf.WithEngine(eng)).Extract(context.Background(), strings.NewReader("x"), "s")
+	if !errors.Is(err, extract.ErrNoContent) {
+		t.Fatalf("err = %v, want ErrNoContent", err)
+	}
+}
+
+func TestExtractEngineErrorPropagates(t *testing.T) {
+	eng := fakeEngine{err: &extract.MalformedSourceError{MediaType: pdf.MediaType, Err: errors.New("boom")}}
+	_, err := pdf.New(pdf.WithEngine(eng)).Extract(context.Background(), strings.NewReader("x"), "s")
 	if !errors.Is(err, extract.ErrMalformedSource) {
-		t.Fatalf("Extract err = %v, want ErrMalformedSource", err)
+		t.Fatalf("err = %v, want ErrMalformedSource", err)
 	}
 }
 
-func TestExtractEmptyInputIsMalformed(t *testing.T) {
-	// An empty reader is not a valid PDF (no header/xref), so it is malformed
-	// rather than ErrNoContent (which is reserved for a clean parse with no text).
-	_, err := pdf.New().Extract(context.Background(), bytes.NewReader(nil), "s")
-	if !errors.Is(err, extract.ErrMalformedSource) {
-		t.Fatalf("Extract err = %v, want ErrMalformedSource for empty input", err)
-	}
-}
-
-func TestExtractTruncatedPDFDoesNotPanic(t *testing.T) {
-	// A truncated "%PDF" header exercises the parser on malformed input. Whatever
-	// the parser does (error or panic), the recover boundary must turn it into a
-	// MalformedSourceError rather than crash the caller.
-	_, err := pdf.New().Extract(context.Background(), strings.NewReader("%PDF-1.4\n garbage stream without xref"), "s")
-	if !errors.Is(err, extract.ErrMalformedSource) {
-		t.Fatalf("Extract err = %v, want ErrMalformedSource for truncated PDF", err)
-	}
-}
-
-func TestExtractHonorsCanceledContext(t *testing.T) {
+func TestExtractContextCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := pdf.New().Extract(ctx, strings.NewReader("%PDF-1.4"), "s")
+	_, err := pdf.New(pdf.WithEngine(fakeEngine{})).Extract(ctx, strings.NewReader("x"), "s")
 	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("Extract err = %v, want context.Canceled", err)
-	}
-}
-
-// The watchdog must bound a hanging parse: a known-hang PDF with a short Timeout
-// returns ErrMalformedSource quickly rather than blocking forever. This is the
-// core stopgap behavior (recover() cannot catch the hang).
-func TestExtractHangIsBoundedByTimeout(t *testing.T) {
-	e := pdf.Extractor{Timeout: 200 * time.Millisecond}
-	done := make(chan error, 1)
-	go func() {
-		_, err := e.Extract(context.Background(), bytes.NewReader(minimalPDF()), "s")
-		done <- err
-	}()
-	select {
-	case err := <-done:
-		if !errors.Is(err, extract.ErrMalformedSource) {
-			t.Fatalf("Extract err = %v, want ErrMalformedSource (timeout)", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Extract did not return within 5s; watchdog failed to bound the hang")
-	}
-}
-
-func TestMalformedErrorCarriesMediaType(t *testing.T) {
-	_, err := pdf.New().Extract(context.Background(), strings.NewReader("nope"), "s")
-	var mErr *extract.MalformedSourceError
-	if !errors.As(err, &mErr) {
-		t.Fatalf("Extract err = %v, want *MalformedSourceError", err)
-	}
-	if mErr.MediaType != pdf.MediaType {
-		t.Fatalf("MalformedSourceError.MediaType = %q, want %q", mErr.MediaType, pdf.MediaType)
+		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 }

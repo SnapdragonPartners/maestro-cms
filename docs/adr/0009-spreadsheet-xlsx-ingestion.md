@@ -25,7 +25,7 @@ But much of that practice is **application and retrieval policy**, not extractio
 - Classifying a region as a "title block" or "section" is heuristic policy.
 - A richly-typed spreadsheet-region chunk schema (region kind, headers[],
   row_labels[]) is domain schema. Apps own persistence and their own schema; the
-  library carries values (spec §3, principle 7).
+  library carries values (spec §3 Core Design Principles 2–3).
 
 This is the same line already drawn for Morris's `internal/classify`: clean,
 reusable code that nonetheless encodes policy, so it stays in the app (spec §7).
@@ -43,8 +43,9 @@ boundary:
 
 - Deterministic, faithful extraction only: workbook/sheet structure (including
   hidden sheets), Excel tables, named ranges, comments/notes.
-- Per-sheet (or per-table) text artifacts via the existing multi-artifact return
-  (`[]content.Artifact`, ADR 0003) — a workbook fans out naturally.
+- Per-sheet (or per-table) text artifacts: extract returns `[]content.Artifact`,
+  and a source fans out to multiple derived artifacts (ADR 0003) — a workbook
+  does so naturally.
 - Faithful textual rendering of populated regions (headers + rows), skipping empty
   areas. No semantic guessing.
 - Coordinates/context (`workbook`, `sheet`, `range`, `headers`) carried in
