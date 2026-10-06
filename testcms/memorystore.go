@@ -40,6 +40,34 @@ func (s *MemoryStore) Get(_ context.Context, key string) (io.ReadCloser, error) 
 	return io.NopCloser(bytes.NewReader(cp)), nil
 }
 
+// GetRange implements store.RangeReader: a private copy of length bytes from
+// offset (to the end when length < 0, shortened to the end when it runs past
+// it), store.ErrObjectNotFound for an absent key, store.ErrRangeNotSatisfiable
+// for an offset at or past the end, an error for a negative offset.
+func (s *MemoryStore) GetRange(_ context.Context, key string, offset, length int64) (io.ReadCloser, error) {
+	if offset < 0 {
+		return nil, fmt.Errorf("testcms: get range %q: negative offset %d", key, offset)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, ok := s.objects[key]
+	if !ok {
+		return nil, store.ErrObjectNotFound
+	}
+	if offset >= int64(len(b)) {
+		return nil, store.ErrRangeNotSatisfiable
+	}
+	// Compare before adding: an oversized length must not overflow into a
+	// negative endpoint; it simply reads to the end.
+	end := int64(len(b))
+	if length >= 0 && length < end-offset {
+		end = offset + length
+	}
+	cp := make([]byte, end-offset)
+	copy(cp, b[offset:end])
+	return io.NopCloser(bytes.NewReader(cp)), nil
+}
+
 // Put reads all bytes from r and stores a private copy at key, overwriting any
 // existing object.
 func (s *MemoryStore) Put(_ context.Context, key string, r io.Reader) error {

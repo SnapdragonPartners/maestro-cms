@@ -24,8 +24,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
+	"net/http"
 
 	"cloud.google.com/go/storage"
+	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
 
 	"github.com/SnapdragonPartners/maestro-cms/store"
@@ -119,6 +122,44 @@ func (s *Store) Get(ctx context.Context, key string) (io.ReadCloser, error) {
 			return nil, store.ErrObjectNotFound
 		}
 		return nil, fmt.Errorf("gcs: get %q: %w", key, err)
+	}
+	return rc, nil
+}
+
+// GetRange implements store.RangeReader over the object's native range read:
+// length bytes from offset, or to the end when length < 0. Missing object →
+// store.ErrObjectNotFound; an offset at or past the end →
+// store.ErrRangeNotSatisfiable (whether the service answered 416 or, for a
+// zero-length or empty read, answered at all — the object's recorded size
+// decides). The caller must close the reader.
+//
+// Two SDK behaviours are normalized away. A length whose inclusive endpoint
+// (offset+length-1) would overflow int64 is read to the end, since the SDK
+// would otherwise build a corrupt Range header. And the read is of the STORED
+// bytes (ReadCompressed): for an object stored with Content-Encoding: gzip the
+// service would otherwise transcode and may ignore the range, handing back
+// the whole decompressed object under a range request.
+func (s *Store) GetRange(ctx context.Context, key string, offset, length int64) (io.ReadCloser, error) {
+	if offset < 0 {
+		return nil, fmt.Errorf("gcs: get range %q: negative offset %d", key, offset)
+	}
+	if length > math.MaxInt64-offset {
+		length = -1
+	}
+	rc, err := s.client.Bucket(s.bucket).Object(key).ReadCompressed(true).NewRangeReader(ctx, offset, length)
+	if err != nil {
+		if errors.Is(err, storage.ErrObjectNotExist) {
+			return nil, store.ErrObjectNotFound
+		}
+		var gerr *googleapi.Error
+		if errors.As(err, &gerr) && gerr.Code == http.StatusRequestedRangeNotSatisfiable {
+			return nil, store.ErrRangeNotSatisfiable
+		}
+		return nil, fmt.Errorf("gcs: get range %q: %w", key, err)
+	}
+	if offset >= rc.Attrs.Size {
+		_ = rc.Close()
+		return nil, store.ErrRangeNotSatisfiable
 	}
 	return rc, nil
 }

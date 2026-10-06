@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/SnapdragonPartners/maestro-cms/store"
 	"github.com/SnapdragonPartners/maestro-cms/store/gcs"
 )
 
@@ -16,6 +17,8 @@ func mustPanic(t *testing.T, name string, fn func()) {
 	}()
 	fn()
 }
+
+var _ store.RangeReader = (*gcs.Store)(nil)
 
 func TestNewWithClientPanics(t *testing.T) {
 	// Bucket is checked before client, so an empty bucket panics even with a nil
