@@ -24,8 +24,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
+	"net/http"
 
 	"cloud.google.com/go/storage"
+	"google.golang.org/api/googleapi"
+	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 
 	"github.com/SnapdragonPartners/maestro-cms/store"
@@ -39,7 +43,12 @@ type Store struct {
 	ownsClient bool
 }
 
-var _ store.ObjectStore = (*Store)(nil)
+var (
+	_ store.ObjectStore = (*Store)(nil)
+	_ store.RangeReader = (*Store)(nil)
+	_ store.Composer    = (*Store)(nil)
+	_ store.Lister      = (*Store)(nil)
+)
 
 // New constructs a Store over bucket, creating a GCS client with the given
 // options. In normal operation pass no options and the client authenticates via
@@ -123,6 +132,44 @@ func (s *Store) Get(ctx context.Context, key string) (io.ReadCloser, error) {
 	return rc, nil
 }
 
+// GetRange implements store.RangeReader over the object's native range read:
+// length bytes from offset, or to the end when length < 0. Missing object →
+// store.ErrObjectNotFound; an offset at or past the end →
+// store.ErrRangeNotSatisfiable (whether the service answered 416 or, for a
+// zero-length or empty read, answered at all — the object's recorded size
+// decides). The caller must close the reader.
+//
+// Two SDK behaviours are normalized away. A length whose inclusive endpoint
+// (offset+length-1) would overflow int64 is read to the end, since the SDK
+// would otherwise build a corrupt Range header. And the read is of the STORED
+// bytes (ReadCompressed): for an object stored with Content-Encoding: gzip the
+// service would otherwise transcode and may ignore the range, handing back
+// the whole decompressed object under a range request.
+func (s *Store) GetRange(ctx context.Context, key string, offset, length int64) (io.ReadCloser, error) {
+	if offset < 0 {
+		return nil, fmt.Errorf("gcs: get range %q: negative offset %d", key, offset)
+	}
+	if length > math.MaxInt64-offset {
+		length = -1
+	}
+	rc, err := s.client.Bucket(s.bucket).Object(key).ReadCompressed(true).NewRangeReader(ctx, offset, length)
+	if err != nil {
+		if errors.Is(err, storage.ErrObjectNotExist) {
+			return nil, store.ErrObjectNotFound
+		}
+		var gerr *googleapi.Error
+		if errors.As(err, &gerr) && gerr.Code == http.StatusRequestedRangeNotSatisfiable {
+			return nil, store.ErrRangeNotSatisfiable
+		}
+		return nil, fmt.Errorf("gcs: get range %q: %w", key, err)
+	}
+	if offset >= rc.Attrs.Size {
+		_ = rc.Close()
+		return nil, store.ErrRangeNotSatisfiable
+	}
+	return rc, nil
+}
+
 // Put writes the bytes read from r to key, replacing any existing object. The
 // upload is finalized atomically on success; a copy failure aborts it without
 // committing a partial object.
@@ -173,4 +220,53 @@ func (s *Store) Exists(ctx context.Context, key string) (bool, error) {
 		return false, fmt.Errorf("gcs: exists %q: %w", key, err)
 	}
 	return true, nil
+}
+
+// Compose implements store.Composer over the service's native compose: dst
+// becomes the concatenation of srcs in order, a metadata operation on the
+// service side — no byte travels through the caller. The source count is
+// checked here, before any request, against store.MaxComposeSources (the
+// service's own limit). A missing source → store.ErrObjectNotFound. The
+// destination's content type is set when contentType is non-empty.
+func (s *Store) Compose(ctx context.Context, dst string, srcs []string, contentType string) error {
+	if len(srcs) == 0 || len(srcs) > store.MaxComposeSources {
+		return fmt.Errorf("gcs: compose %q: %d sources, want 1..%d", dst, len(srcs), store.MaxComposeSources)
+	}
+	bucket := s.client.Bucket(s.bucket)
+	objs := make([]*storage.ObjectHandle, len(srcs))
+	for i, k := range srcs {
+		objs[i] = bucket.Object(k)
+	}
+	c := bucket.Object(dst).ComposerFrom(objs...)
+	c.ContentType = contentType
+	if _, err := c.Run(ctx); err != nil {
+		if errors.Is(err, storage.ErrObjectNotExist) {
+			return store.ErrObjectNotFound
+		}
+		var gerr *googleapi.Error
+		if errors.As(err, &gerr) && gerr.Code == http.StatusNotFound {
+			return store.ErrObjectNotFound
+		}
+		return fmt.Errorf("gcs: compose %q: %w", dst, err)
+	}
+	return nil
+}
+
+// List implements store.Lister over the bucket's native prefix listing, in
+// the service's order (ascending by key). fn's first error ends the listing
+// and is returned unchanged.
+func (s *Store) List(ctx context.Context, prefix string, fn func(store.ObjectInfo) error) error {
+	it := s.client.Bucket(s.bucket).Objects(ctx, &storage.Query{Prefix: prefix})
+	for {
+		attrs, err := it.Next()
+		if errors.Is(err, iterator.Done) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("gcs: list %q: %w", prefix, err)
+		}
+		if ferr := fn(store.ObjectInfo{Key: attrs.Name, Size: attrs.Size, Created: attrs.Created}); ferr != nil {
+			return ferr
+		}
+	}
 }
