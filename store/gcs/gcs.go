@@ -24,8 +24,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 
 	"cloud.google.com/go/storage"
+	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
 
 	"github.com/SnapdragonPartners/maestro-cms/store"
@@ -119,6 +121,28 @@ func (s *Store) Get(ctx context.Context, key string) (io.ReadCloser, error) {
 			return nil, store.ErrObjectNotFound
 		}
 		return nil, fmt.Errorf("gcs: get %q: %w", key, err)
+	}
+	return rc, nil
+}
+
+// GetRange implements store.RangeReader over the object's native range read:
+// length bytes from offset, or to the end when length < 0. Missing object →
+// store.ErrObjectNotFound; an offset at or past the end → the service's 416,
+// mapped to store.ErrRangeNotSatisfiable. The caller must close the reader.
+func (s *Store) GetRange(ctx context.Context, key string, offset, length int64) (io.ReadCloser, error) {
+	if offset < 0 {
+		return nil, fmt.Errorf("gcs: get range %q: negative offset %d", key, offset)
+	}
+	rc, err := s.client.Bucket(s.bucket).Object(key).NewRangeReader(ctx, offset, length)
+	if err != nil {
+		if errors.Is(err, storage.ErrObjectNotExist) {
+			return nil, store.ErrObjectNotFound
+		}
+		var gerr *googleapi.Error
+		if errors.As(err, &gerr) && gerr.Code == http.StatusRequestedRangeNotSatisfiable {
+			return nil, store.ErrRangeNotSatisfiable
+		}
+		return nil, fmt.Errorf("gcs: get range %q: %w", key, err)
 	}
 	return rc, nil
 }

@@ -203,3 +203,46 @@ func TestGCSNewEmulatorRoundTrip(t *testing.T) {
 	}
 	_ = st.Delete(ctx, key)
 }
+
+func TestGCSGetRange(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	const key = "range/object.bin"
+	payload := []byte("0123456789abcdef")
+	if err := st.Put(ctx, key, bytes.NewReader(payload)); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	read := func(offset, length int64) (string, error) {
+		rc, err := st.GetRange(ctx, key, offset, length)
+		if err != nil {
+			return "", err
+		}
+		defer rc.Close()
+		b, err := io.ReadAll(rc)
+		return string(b), err
+	}
+	for _, c := range []struct {
+		name           string
+		offset, length int64
+		want           string
+	}{
+		{"middle", 2, 3, "234"},
+		{"to the end", 10, -1, "abcdef"},
+		{"runs past the end, shortened", 14, 10, "ef"},
+		{"whole object", 0, -1, string(payload)},
+	} {
+		got, err := read(c.offset, c.length)
+		if err != nil || got != c.want {
+			t.Errorf("%s: GetRange(%d, %d) = %q, %v; want %q", c.name, c.offset, c.length, got, err, c.want)
+		}
+	}
+	if _, err := read(int64(len(payload)), 1); !errors.Is(err, store.ErrRangeNotSatisfiable) {
+		t.Errorf("offset at the end: err = %v, want ErrRangeNotSatisfiable", err)
+	}
+	if _, err := st.GetRange(ctx, key, -1, 1); err == nil {
+		t.Error("negative offset: want an error")
+	}
+	if _, err := st.GetRange(ctx, "range/missing", 0, 1); !errors.Is(err, store.ErrObjectNotFound) {
+		t.Errorf("missing object: err = %v, want ErrObjectNotFound", err)
+	}
+}
