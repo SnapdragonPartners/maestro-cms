@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"time"
 )
 
 // ErrObjectNotFound is returned by adapters when a key does not exist.
@@ -46,4 +47,45 @@ type RangeReader interface {
 	// ErrRangeNotSatisfiable if offset is at or past the object's end; a
 	// negative offset is an error. The caller must close the returned reader.
 	GetRange(ctx context.Context, key string, offset, length int64) (io.ReadCloser, error)
+}
+
+// MaxComposeSources is the most objects one Compose call may join. It is
+// Cloud Storage's limit, and the fake enforces it too, so a caller that must
+// join more composes a tree (sources → intermediates → result) and finds out
+// in its tests, not in production.
+const MaxComposeSources = 32
+
+// Composer is an ObjectStore that can join objects into one without the
+// bytes passing through the caller — what assembling a large upload from
+// parts needs, since reading a gigabyte back to write it again is the cost
+// the parts were meant to avoid. Adapters implement it when the backing
+// store composes natively; a caller discovers it by type assertion.
+type Composer interface {
+	// Compose writes to dst the concatenation of the objects at srcs, in
+	// order, replacing any object at dst; contentType is recorded on dst
+	// when the store records one (the fake does not). Between 1 and
+	// MaxComposeSources sources, else an error before anything is written.
+	// It returns ErrObjectNotFound if any source does not exist.
+	Compose(ctx context.Context, dst string, srcs []string, contentType string) error
+}
+
+// ObjectInfo describes one listed object.
+type ObjectInfo struct {
+	// Key is the object's key, as Get would take it.
+	Key string
+	// Size is the object's length in bytes.
+	Size int64
+	// Created is when the object was written (its current generation).
+	Created time.Time
+}
+
+// Lister is an ObjectStore that can enumerate the objects under a key
+// prefix — what a sweep that reconciles a store against a database needs.
+// Adapters implement it when the backing store lists natively; a caller
+// discovers it by type assertion.
+type Lister interface {
+	// List calls fn once for every object whose key begins with prefix, in
+	// ascending key order, and stops at the first error fn returns, which it
+	// returns unchanged. An empty prefix lists every object.
+	List(ctx context.Context, prefix string, fn func(ObjectInfo) error) error
 }

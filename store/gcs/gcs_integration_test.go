@@ -317,3 +317,90 @@ func TestGCSGetRangeReadsStoredBytesOfAGzipObject(t *testing.T) {
 		t.Fatalf("GetRange over a gzip-encoded object = %d bytes %q, want the stored bytes 4..19 %q", len(got), got, want)
 	}
 }
+
+func TestGCSCompose(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	parts := []string{"compose/p0", "compose/p1", "compose/p2"}
+	want := ""
+	for i, k := range parts {
+		chunk := strings.Repeat(string(rune('a'+i)), 1000+i)
+		want += chunk
+		if err := st.Put(ctx, k, strings.NewReader(chunk)); err != nil {
+			t.Fatalf("Put %s: %v", k, err)
+		}
+	}
+	if err := st.Compose(ctx, "compose/out", parts, "video/mp4"); err != nil {
+		t.Fatalf("Compose: %v", err)
+	}
+	rc, err := st.Get(ctx, "compose/out")
+	if err != nil {
+		t.Fatalf("Get out: %v", err)
+	}
+	got, err := io.ReadAll(rc)
+	_ = rc.Close()
+	if err != nil || string(got) != want {
+		t.Fatalf("composed bytes differ (len %d vs %d, err %v)", len(got), len(want), err)
+	}
+	// The content type the caller named is the destination's (read through
+	// the SDK directly; the Store has no attributes accessor).
+	client, err := storage.NewClient(ctx, option.WithoutAuthentication())
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+	attrs, err := client.Bucket(testBucket).Object("compose/out").Attrs(ctx)
+	if err != nil {
+		t.Fatalf("attrs: %v", err)
+	}
+	if attrs.ContentType != "video/mp4" {
+		t.Fatalf("content type = %q, want video/mp4", attrs.ContentType)
+	}
+	// A missing source fails and writes nothing. The service answers 404,
+	// which the adapter maps to ErrObjectNotFound (TestComposeMapsNotFound,
+	// against a stand-in server); the emulator answers 500 instead, so here
+	// only the failure and the absence of the destination are asserted.
+	if err := st.Compose(ctx, "compose/none", []string{parts[0], "compose/missing"}, ""); err == nil {
+		t.Fatal("missing source: Compose succeeded")
+	}
+	if ok, _ := st.Exists(ctx, "compose/none"); ok {
+		t.Fatal("a failed compose wrote its destination")
+	}
+	// Too many sources is refused before any request.
+	many := make([]string, store.MaxComposeSources+1)
+	for i := range many {
+		many[i] = parts[0]
+	}
+	if err := st.Compose(ctx, "compose/many", many, ""); err == nil || errors.Is(err, store.ErrObjectNotFound) {
+		t.Fatalf("%d sources: err = %v, want a plain error", len(many), err)
+	}
+}
+
+func TestGCSList(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	for k, v := range map[string]string{"list/a/1": "x", "list/a/0": "xy", "list/b": "xyz"} {
+		if err := st.Put(ctx, k, strings.NewReader(v)); err != nil {
+			t.Fatalf("Put %s: %v", k, err)
+		}
+	}
+	var got []store.ObjectInfo
+	if err := st.List(ctx, "list/a/", func(o store.ObjectInfo) error { got = append(got, o); return nil }); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 2 || got[0].Key != "list/a/0" || got[0].Size != 2 || got[1].Key != "list/a/1" || got[1].Size != 1 {
+		t.Fatalf("List(list/a/) = %+v, want list/a/0 (2) then list/a/1 (1)", got)
+	}
+	if got[0].Created.IsZero() {
+		t.Fatal("Created is zero")
+	}
+	sentinel := errors.New("stop")
+	seen := 0
+	if err := st.List(ctx, "list/", func(store.ObjectInfo) error { seen++; return sentinel }); !errors.Is(err, sentinel) || seen != 1 {
+		t.Fatalf("failing fn: err = %v, seen = %d; want the sentinel after one", err, seen)
+	}
+	n := 0
+	if err := st.List(ctx, "list/nothing/", func(store.ObjectInfo) error { n++; return nil }); err != nil || n != 0 {
+		t.Fatalf("empty prefix listing: err = %v, n = %d", err, n)
+	}
+}
