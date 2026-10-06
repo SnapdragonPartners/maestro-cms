@@ -29,6 +29,7 @@ import (
 
 	"cloud.google.com/go/storage"
 	"google.golang.org/api/googleapi"
+	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 
 	"github.com/SnapdragonPartners/maestro-cms/store"
@@ -42,7 +43,12 @@ type Store struct {
 	ownsClient bool
 }
 
-var _ store.ObjectStore = (*Store)(nil)
+var (
+	_ store.ObjectStore = (*Store)(nil)
+	_ store.RangeReader = (*Store)(nil)
+	_ store.Composer    = (*Store)(nil)
+	_ store.Lister      = (*Store)(nil)
+)
 
 // New constructs a Store over bucket, creating a GCS client with the given
 // options. In normal operation pass no options and the client authenticates via
@@ -214,4 +220,53 @@ func (s *Store) Exists(ctx context.Context, key string) (bool, error) {
 		return false, fmt.Errorf("gcs: exists %q: %w", key, err)
 	}
 	return true, nil
+}
+
+// Compose implements store.Composer over the service's native compose: dst
+// becomes the concatenation of srcs in order, a metadata operation on the
+// service side — no byte travels through the caller. The source count is
+// checked here, before any request, against store.MaxComposeSources (the
+// service's own limit). A missing source → store.ErrObjectNotFound. The
+// destination's content type is set when contentType is non-empty.
+func (s *Store) Compose(ctx context.Context, dst string, srcs []string, contentType string) error {
+	if len(srcs) == 0 || len(srcs) > store.MaxComposeSources {
+		return fmt.Errorf("gcs: compose %q: %d sources, want 1..%d", dst, len(srcs), store.MaxComposeSources)
+	}
+	bucket := s.client.Bucket(s.bucket)
+	objs := make([]*storage.ObjectHandle, len(srcs))
+	for i, k := range srcs {
+		objs[i] = bucket.Object(k)
+	}
+	c := bucket.Object(dst).ComposerFrom(objs...)
+	c.ContentType = contentType
+	if _, err := c.Run(ctx); err != nil {
+		if errors.Is(err, storage.ErrObjectNotExist) {
+			return store.ErrObjectNotFound
+		}
+		var gerr *googleapi.Error
+		if errors.As(err, &gerr) && gerr.Code == http.StatusNotFound {
+			return store.ErrObjectNotFound
+		}
+		return fmt.Errorf("gcs: compose %q: %w", dst, err)
+	}
+	return nil
+}
+
+// List implements store.Lister over the bucket's native prefix listing, in
+// the service's order (ascending by key). fn's first error ends the listing
+// and is returned unchanged.
+func (s *Store) List(ctx context.Context, prefix string, fn func(store.ObjectInfo) error) error {
+	it := s.client.Bucket(s.bucket).Objects(ctx, &storage.Query{Prefix: prefix})
+	for {
+		attrs, err := it.Next()
+		if errors.Is(err, iterator.Done) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("gcs: list %q: %w", prefix, err)
+		}
+		if ferr := fn(store.ObjectInfo{Key: attrs.Name, Size: attrs.Size, Created: attrs.Created}); ferr != nil {
+			return ferr
+		}
+	}
 }
