@@ -222,8 +222,14 @@ func TestMemoryStoreCompose(t *testing.T) {
 func TestMemoryStoreList(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemoryStore()
-	before := time.Now()
-	for k, v := range map[string]string{"u/a/1": "x", "u/a/0": "xy", "u/b/0": "", "v/0": "xyz"} {
+	// A stepping clock: each write is stamped one second after the last, so
+	// Created is deterministic and age-based logic can be tested without
+	// sleeping.
+	epoch := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	tick := 0
+	s.Now = func() time.Time { tick++; return epoch.Add(time.Duration(tick) * time.Second) }
+	for _, k := range []string{"u/a/1", "u/a/0", "u/b/0", "v/0"} {
+		v := map[string]string{"u/a/1": "x", "u/a/0": "xy", "u/b/0": "", "v/0": "xyz"}[k]
 		if err := s.Put(ctx, k, bytes.NewReader([]byte(v))); err != nil {
 			t.Fatalf("Put %s: %v", k, err)
 		}
@@ -235,19 +241,28 @@ func TestMemoryStoreList(t *testing.T) {
 	if len(got) != 2 || got[0].Key != "u/a/0" || got[0].Size != 2 || got[1].Key != "u/a/1" || got[1].Size != 1 {
 		t.Fatalf("List(u/a/) = %+v, want u/a/0 (2 bytes) then u/a/1 (1 byte)", got)
 	}
-	for _, o := range got {
-		if o.Created.Before(before) || o.Created.After(time.Now()) {
-			t.Fatalf("%s: Created %v is not between the Put and now", o.Key, o.Created)
-		}
+	// u/a/1 was the first write (epoch+1s), u/a/0 the second (epoch+2s).
+	if !got[1].Created.Equal(epoch.Add(time.Second)) || !got[0].Created.Equal(epoch.Add(2*time.Second)) {
+		t.Fatalf("Created = %v / %v, want the clock's stamps", got[0].Created, got[1].Created)
 	}
+	// Compose stamps with the same clock.
+	if err := s.Compose(ctx, "u/c", []string{"u/a/0", "u/a/1"}, ""); err != nil {
+		t.Fatalf("Compose: %v", err)
+	}
+	_ = s.List(ctx, "u/c", func(o store.ObjectInfo) error {
+		if !o.Created.Equal(epoch.Add(5 * time.Second)) {
+			t.Fatalf("composed Created = %v, want epoch+5s", o.Created)
+		}
+		return nil
+	})
 	// A broader prefix sees more, an empty one sees everything, a stranger none.
 	count := func(prefix string) int {
 		n := 0
 		_ = s.List(ctx, prefix, func(store.ObjectInfo) error { n++; return nil })
 		return n
 	}
-	if count("u/") != 3 || count("") != 4 || count("w") != 0 {
-		t.Fatalf("counts: u/=%d (want 3), \"\"=%d (want 4), w=%d (want 0)", count("u/"), count(""), count("w"))
+	if count("u/") != 4 || count("") != 5 || count("w") != 0 {
+		t.Fatalf("counts: u/=%d (want 4), \"\"=%d (want 5), w=%d (want 0)", count("u/"), count(""), count("w"))
 	}
 	// fn's error stops the listing and comes back unchanged.
 	sentinel := errors.New("stop")

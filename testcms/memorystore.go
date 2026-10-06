@@ -22,6 +22,12 @@ import (
 // does. It is safe for concurrent use. Its not-found behavior mirrors a real
 // object store: Get and Delete on an absent key return store.ErrObjectNotFound.
 type MemoryStore struct {
+	// Now is the clock that stamps ObjectInfo.Created on Put and Compose.
+	// It defaults to time.Now; a test of age-based logic (a sweep that
+	// spares young objects) sets it to a fixed or stepping clock so the
+	// store stays deterministic — no sleeping, no dependence on timing.
+	Now func() time.Time
+
 	mu      sync.Mutex
 	objects map[string]*memObject
 }
@@ -41,7 +47,7 @@ var (
 
 // NewMemoryStore returns an empty MemoryStore ready for use.
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{objects: make(map[string]*memObject)}
+	return &MemoryStore{Now: time.Now, objects: make(map[string]*memObject)}
 }
 
 // Get returns a reader over a private copy of the bytes stored at key, or
@@ -96,7 +102,7 @@ func (s *MemoryStore) Put(_ context.Context, key string, r io.Reader) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.objects[key] = &memObject{data: b, created: time.Now()}
+	s.objects[key] = &memObject{data: b, created: s.Now()}
 	return nil
 }
 
@@ -120,14 +126,15 @@ func (s *MemoryStore) Compose(_ context.Context, dst string, srcs []string, _ st
 		}
 		out = append(out, o.data...)
 	}
-	s.objects[dst] = &memObject{data: out, created: time.Now()}
+	s.objects[dst] = &memObject{data: out, created: s.Now()}
 	return nil
 }
 
 // List implements store.Lister: fn for every object whose key begins with
 // prefix, in ascending key order, over a snapshot taken under the lock (fn
 // may call back into the store). fn's first error ends the listing and is
-// returned unchanged.
+// returned unchanged. Created is whatever Now said when the object was
+// written.
 func (s *MemoryStore) List(_ context.Context, prefix string, fn func(store.ObjectInfo) error) error {
 	s.mu.Lock()
 	infos := make([]store.ObjectInfo, 0, len(s.objects))
