@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
 	"testing"
 
 	"github.com/SnapdragonPartners/maestro-cms/store"
@@ -118,6 +119,7 @@ func TestMemoryStoreGetRange(t *testing.T) {
 		{"runs past the end, shortened", 8, 10, "89"},
 		{"zero length", 4, 0, ""},
 		{"whole object", 0, -1, "0123456789"},
+		{"oversized length reads to the end, no overflow", 1, math.MaxInt64, "123456789"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

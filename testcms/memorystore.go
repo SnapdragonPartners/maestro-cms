@@ -57,8 +57,10 @@ func (s *MemoryStore) GetRange(_ context.Context, key string, offset, length int
 	if offset >= int64(len(b)) {
 		return nil, store.ErrRangeNotSatisfiable
 	}
+	// Compare before adding: an oversized length must not overflow into a
+	// negative endpoint; it simply reads to the end.
 	end := int64(len(b))
-	if length >= 0 && offset+length < end {
+	if length >= 0 && length < end-offset {
 		end = offset + length
 	}
 	cp := make([]byte, end-offset)

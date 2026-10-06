@@ -8,9 +8,11 @@ package gcs_test
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
 	"io"
+	"math"
 	"os"
 	"strings"
 	"testing"
@@ -230,6 +232,9 @@ func TestGCSGetRange(t *testing.T) {
 		{"to the end", 10, -1, "abcdef"},
 		{"runs past the end, shortened", 14, 10, "ef"},
 		{"whole object", 0, -1, string(payload)},
+		// The SDK's inclusive endpoint (offset+length-1) would overflow;
+		// the adapter reads to the end instead.
+		{"oversized length reads to the end", 2, math.MaxInt64, "23456789abcdef"},
 	} {
 		got, err := read(c.offset, c.length)
 		if err != nil || got != c.want {
@@ -239,10 +244,76 @@ func TestGCSGetRange(t *testing.T) {
 	if _, err := read(int64(len(payload)), 1); !errors.Is(err, store.ErrRangeNotSatisfiable) {
 		t.Errorf("offset at the end: err = %v, want ErrRangeNotSatisfiable", err)
 	}
+	// A zero-length read is a metadata-only request the service answers
+	// even past the end; the contract still says unsatisfiable.
+	if _, err := read(int64(len(payload))+5, 0); !errors.Is(err, store.ErrRangeNotSatisfiable) {
+		t.Errorf("zero-length read past the end: err = %v, want ErrRangeNotSatisfiable", err)
+	}
+	if got, err := read(3, 0); err != nil || got != "" {
+		t.Errorf("zero-length read inside the object = %q, %v; want empty, nil", got, err)
+	}
 	if _, err := st.GetRange(ctx, key, -1, 1); err == nil {
 		t.Error("negative offset: want an error")
 	}
 	if _, err := st.GetRange(ctx, "range/missing", 0, 1); !errors.Is(err, store.ErrObjectNotFound) {
 		t.Errorf("missing object: err = %v, want ErrObjectNotFound", err)
+	}
+}
+
+// An empty object has no byte to serve: offset 0 is already at the end.
+func TestGCSGetRangeEmptyObject(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	const key = "range/empty.bin"
+	if err := st.Put(ctx, key, bytes.NewReader(nil)); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if rc, err := st.GetRange(ctx, key, 0, -1); !errors.Is(err, store.ErrRangeNotSatisfiable) {
+		if rc != nil {
+			_ = rc.Close()
+		}
+		t.Errorf("empty object, offset 0: err = %v, want ErrRangeNotSatisfiable (as MemoryStore)", err)
+	}
+}
+
+// A range addresses the STORED bytes: an object stored gzip-encoded is
+// served as its compressed bytes, not transcoded (which could hand back
+// the whole decompressed object under a range request).
+func TestGCSGetRangeReadsStoredBytesOfAGzipObject(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	client, err := storage.NewClient(ctx, option.WithoutAuthentication())
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	const key = "range/encoded.txt"
+	var compressed bytes.Buffer
+	zw := gzip.NewWriter(&compressed)
+	if _, err := zw.Write(bytes.Repeat([]byte("the same line over and over\n"), 200)); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	w := client.Bucket(testBucket).Object(key).NewWriter(ctx)
+	w.ContentType, w.ContentEncoding = "text/plain", "gzip"
+	if _, err := w.Write(compressed.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("write gzip object: %v", err)
+	}
+	rc, err := st.GetRange(ctx, key, 4, 16)
+	if err != nil {
+		t.Fatalf("GetRange: %v", err)
+	}
+	got, err := io.ReadAll(rc)
+	_ = rc.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := compressed.Bytes()[4:20]; !bytes.Equal(got, want) {
+		t.Fatalf("GetRange over a gzip-encoded object = %d bytes %q, want the stored bytes 4..19 %q", len(got), got, want)
 	}
 }
