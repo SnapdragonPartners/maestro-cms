@@ -4,7 +4,7 @@ go 1.26.6
 
 require (
 	cloud.google.com/go/storage v1.62.3
-	github.com/SnapdragonPartners/maestro-llms v1.0.0-rc.1
+	github.com/SnapdragonPartners/maestro-llms v1.0.0
 	github.com/dslipak/pdf v0.0.2
 	golang.org/x/net v0.60.0
 	google.golang.org/api v0.288.0
