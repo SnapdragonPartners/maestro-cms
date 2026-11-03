@@ -2,11 +2,13 @@ module github.com/SnapdragonPartners/maestro-cms
 
 go 1.26.6
 
+toolchain go1.26.10
+
 require (
 	cloud.google.com/go/storage v1.62.3
 	github.com/SnapdragonPartners/maestro-llms v1.0.0
 	github.com/dslipak/pdf v0.0.2
-	golang.org/x/net v0.60.0
+	golang.org/x/net v0.62.0
 	google.golang.org/api v0.288.0
 )
 
@@ -44,11 +46,11 @@ require (
 	go.opentelemetry.io/otel/sdk v1.45.0 // indirect
 	go.opentelemetry.io/otel/sdk/metric v1.45.0 // indirect
 	go.opentelemetry.io/otel/trace v1.45.0 // indirect
-	golang.org/x/crypto v0.57.0 // indirect
+	golang.org/x/crypto v0.58.0 // indirect
 	golang.org/x/oauth2 v0.37.0 // indirect
-	golang.org/x/sync v0.23.0 // indirect
-	golang.org/x/sys v0.48.0 // indirect
-	golang.org/x/text v0.42.0 // indirect
+	golang.org/x/sync v0.24.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/genproto v0.0.0-20260715232425-e75dac1f907d // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260715232425-e75dac1f907d // indirect
