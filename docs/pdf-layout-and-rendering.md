@@ -278,8 +278,11 @@ Why these flags and tools:
   - Coordinates may still be huge or far off the page (a valid PDF can place
     text anywhere). The parser keeps them; consumers of coordinates, including
     `AssemblePage` (§6.3), must not size anything from them.
-  - Stream the output (line scanner over the capped stdout), don't buffer then
-    parse.
+  - Stream the output: the parser reads TSV lines from the child's stdout as
+    they arrive, through the capped sink described in §8, so raw TSV is never
+    held in memory alongside the parsed `Layout`. A single line longer than a
+    fixed limit (1 MiB) is malformed output, so one giant "word" can't grow
+    the scanner's buffer without bound.
 - Output cap: TSV is ≈13x the plain text, so the layout call has its own cap,
   `WithMaxLayoutBytes`, default 256 MiB. Reusing the 64 MiB text cap would make
   documents that extract fine as text fail on layout.
@@ -452,7 +455,19 @@ Before adding the new commands (`pdfinfo`, `pdftotext -tsv`, `pdftoppm`), move
 the subprocess code out of `pdftotext` into `extract/pdf/internal/popplerexec`:
 
 - binary lookup, timeout and cancellation;
-- the capped stdout writer (`capWriter`) and truncating stderr writer;
+- a **sink-based** stdout cap and the truncating stderr writer. Today's
+  `capWriter` both counts and stores (it owns a `bytes.Buffer`), which would
+  keep up to 256 MiB of raw TSV in memory. The refactor splits the two: the
+  cap is a counting wrapper around any `io.Writer` sink that cancels the child
+  when the limit is crossed.
+  - Text and image calls pass a `bytes.Buffer` as the sink, so they behave as
+    today.
+  - `Layout` passes the write end of an `io.Pipe`; the TSV parser reads the
+    other end in its own goroutine. If parsing fails, the parser closes the
+    pipe with the error and cancels the child, so the child can't block on a
+    full pipe; the run waits for both the child and the parser before
+    classifying the result. A cap hit, timeout or cancellation still wins
+    over a parse error, in today's priority order;
 - classifying the result in today's priority order: output cap, caller
   cancellation, own timeout, exit status, start failure.
 
@@ -496,8 +511,19 @@ today's `Page.Text`. What this design keeps open:
   check on its own fixtures, and possibly the dehyphenation option (open
   question 6). This design measures the gap (§11) rather than promising it is
   zero.
-- Byte offsets per word give page ranges directly (a page's range is its words'
-  first and last spans plus the join separator).
+- Page ranges come from the assembled page texts, not from word spans. Word
+  spans are offsets within one page's text, for highlighting; they are in
+  engine-word order while `Rows` may reorder words in the text, and blank or
+  scanned pages have none. So a consumer that joins pages into one document
+  derives each page's range from its assembled text's byte length and its
+  cumulative offset in the joined document, as Morris does today. The
+  consumer's policy decides the edge cases; Morris's current one carries over
+  directly:
+  - empty pages contribute no text and no range;
+  - each range is extended to the next range's start, so the join separator
+    belongs to the page before it and every byte maps to exactly one page.
+
+  A word's document offset is then its page's start plus its span.
 - The serialized `Layout` has JSON tags and a version, so Morris can persist it
   beside its text.
 - Error values are the same sentinels; `ErrEngineCrashed` still matches
@@ -538,6 +564,13 @@ so the UI's highlights come from the same text the checks ran on.
     NaN rejected earlier by the parser).
   - Renderer sizing: scale chosen from DPI vs `MaxPixels`, and the
     header-size check.
+  - Streaming `Layout` with a fake binary: TSV that turns malformed halfway
+    through a large output stops the child (no hang on a full pipe) and
+    returns malformed output; a cap hit mid-stream returns
+    `ErrOutputTooLarge`, not a parse error; an over-long line is rejected.
+  - Page ranges: a `Rows`-assembled page whose words are reordered, plus
+    blank pages, joined Morris-style; every byte maps to exactly one page and
+    each word's document offset lands on its text.
   - Error classification with a fake binary: exits non-zero, kills itself with
     SIGABRT (→ `ErrEngineCrashed`, also `ErrMalformedSource`), floods stdout
     (→ cap), sleeps (→ timeout), missing (→ unavailable).
