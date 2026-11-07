@@ -374,10 +374,6 @@ type RenderOptions struct {
 	DPI       float64 // target resolution; 0 → default 150
 	MaxPixels int     // hard limit on the longer side; 0 → default 2048
 	Quality   int     // JPEG only, 1–100; 0 → default 85
-	// PageWidth/PageHeight: the page as displayed (crop box, after rotation),
-	// in points, normally PageLayout.Width/Height. Zero → the renderer looks
-	// it up with pdfinfo (one extra subprocess).
-	PageWidth, PageHeight float64
 }
 
 type Image struct {
@@ -394,23 +390,35 @@ type Image struct {
 func (r *Renderer) Render(ctx context.Context, data []byte, o RenderOptions) (*Image, error)
 ```
 
-- **The page size is known before rendering.** The image alone can't give it:
-  after scaling down, differently sized pages with the same aspect ratio give
-  identical images, and the renderer must know the size up front to decide
-  whether the DPI would exceed `MaxPixels`. So the size comes from the caller
-  (usually from `Layout`, which already ran `pdfinfo`) or from the renderer's
-  own `pdfinfo` lookup through the same internal geometry helper (§6.2, §8).
-- **Sizing:** scale = min(DPI / 72, MaxPixels / longer side in points). The
-  renderer passes the resulting pixel size explicitly (`-scale-to-x` and
-  `-scale-to-y`) rather than a DPI, so the cap holds exactly. maestro-agents'
-  review UI asks for a DPI; images sent to a model need "fit within N px" for
+- **The renderer reads the page size itself, before rendering.** The image
+  alone can't give it: after scaling down, differently sized pages with the
+  same aspect ratio give identical images, and the renderer must know the size
+  up front to decide whether the DPI would exceed `MaxPixels`. So every
+  `Render` call first runs `pdfinfo` for that page through the shared geometry
+  helper (§6.2, §8), the same source `Layout` uses, so their coordinates agree
+  by construction. The renderer deliberately takes **no page size from the
+  caller**: the explicit pixel flags below force the output size, so a wrong
+  caller-supplied size would produce a plausible image with a wrong scale that
+  no check could catch. The cost is one extra subprocess (0.14 s on the 342 MB
+  document, §3.5), small next to rendering itself.
+- **Sizing:** scale = min(DPI / 72, MaxPixels / longer side in points), using
+  the displayed (rotated) page size. The renderer passes the resulting pixel
+  size explicitly as `-scale-to-x W -scale-to-y H
+  -scale-dimension-before-rotation`, rather than a DPI, so the cap holds
+  exactly. The last flag is required: without it, Poppler 26.04.0 applies the
+  dimensions before rotating, so a 612 × 792-point page with `/Rotate 90`
+  asked for 792 × 612 comes out 612 × 792 (verified; with the flag it comes
+  out 792 × 612, and unrotated pages are unaffected). maestro-agents' review
+  UI asks for a DPI; images sent to a model need "fit within N px" for
   provider limits.
 - **Report what was applied.** Width and height come from the PNG/JPEG header
   (`image.DecodeConfig`, stdlib), and the scale from those divided by the page
-  size used, so callers convert point coordinates to pixels without assuming
-  the DPI was honored. If the header's size disagrees with the requested size
-  by more than a pixel of rounding, the render fails as malformed output (the
-  page size the caller passed was wrong for this PDF).
+  size `pdfinfo` reported, so callers convert point coordinates to pixels
+  without assuming the DPI was honored. If the header's size differs from the
+  requested size by more than a pixel of rounding, the render fails as
+  malformed output. This checks that `pdftoppm` honored the requested pixels;
+  it does not (and can't) validate the page geometry, which is why the
+  geometry comes from `pdfinfo` and not the caller.
 - **Format:** PNG default for born-digital pages (sharp text); JPEG for scanned
   pages, 4–10x faster and ~10x smaller (§3.4). The docs say which to pick.
 - `-cropbox`, matching §6.2.
@@ -536,9 +544,12 @@ so the UI's highlights come from the same text the checks ran on.
 - **Integration tests with Poppler** (skipped when the binary is absent, as
   today), on synthetic fixtures committed to the repo:
   - a statement-shaped table (default vs `-layout`; `Rows` vs `ReadingOrder`);
-  - rotated pages (`/Rotate 90`, `270`), with and without a CropBox ≠
-    MediaBox: `PageLayout` size equals the rendered size at 72 dpi, and a known
-    word's box contains its rendered ink (the §3.5 check, automated);
+  - rotated pages (`/Rotate 90`, `270`) on a non-square page, with and without
+    a CropBox ≠ MediaBox, rendered through `Render` itself (so with the real
+    `-scale-to-x/-scale-to-y -scale-dimension-before-rotation` flags), both
+    at the DPI and capped by `MaxPixels`: the image's size matches
+    `PageLayout` size × reported scale, and a known word's box, scaled,
+    contains its rendered ink (the §3.5 check, automated);
   - a blank rotated page: correct size with no words;
   - a hyphenated line end: `ReadingOrder` keeps both halves (§3.6);
   - a blank page and an image-only page: present in `Layout`, renderable;
@@ -553,7 +564,7 @@ so the UI's highlights come from the same text the checks ran on.
 ## 12. Deployment notes (for consumers' images)
 
 - Text needs only `pdftotext`. Layout adds `pdfinfo`. Rendering adds
-  `pdftoppm` (and `pdfinfo` unless the caller passes the page size). All three
+  `pdftoppm` and `pdfinfo` (the renderer reads page sizes itself). All three
   are in `poppler-utils`.
 - `pdftoppm` needs runtime data that an `ldd`-derived library closure (Morris's
   distroless approach, ADR 0047) doesn't carry:
@@ -574,7 +585,8 @@ so the UI's highlights come from the same text the checks ran on.
 2. **`pdf.mode` mechanism:** an optional `Mode()` interface on the engine (§5),
    or have the engine set metadata on `Page` (a new optional field)?
 3. ~~Renderer page size~~ — resolved in review: inference from the image is
-   unsound, so the size comes from the caller or `pdfinfo` (§7.1).
+   unsound, and a caller-supplied size can't be validated, so the renderer
+   always reads it with `pdfinfo` (§7.1).
 4. **`Rows` thresholds:** the overlap fraction and `MaxGapSpaces` are tuned on
    synthetic fixtures; maestro-agents can tune them on their confidential
    samples. Expose them as options (with the same hard ceiling), or keep them
