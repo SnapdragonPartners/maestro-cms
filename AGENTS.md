@@ -123,10 +123,23 @@ Once these exist, prefer the canonical Make targets over ad hoc commands.
 
 ## Pull Requests
 
-Merging is blocked on open review threads. When you address review feedback
-(human or bot, e.g. Copilot), always **resolve the thread**, not just reply to
-it — a REST reply does not mark a thread resolved. Resolve via the GraphQL
-`resolveReviewThread` mutation:
+Merging is blocked on open review threads. The automated reviewer is
+**buggrit** (`.github/workflows/buggrit.yml`, config `.github/buggrit.json`,
+which it reads from `main`, not from the PR). It posts each finding as its own
+review thread and re-verifies earlier findings on every push. Its check is
+`buggrit / review`: after a push, wait for that check to finish for the head
+SHA before merging, or the thread gate is vacuous. To rerun a pass at the
+current head (say after one hit its deadline), `gh run rerun <run-id>`.
+
+**buggrit threads:** to fix a finding, push the fix and **leave its thread
+open**; buggrit verifies it on the next push and resolves it. Resolving a
+buggrit thread settles the finding (buggrit won't raise it again), so resolve
+one yourself only when deliberately not fixing it, after replying with the
+reason.
+
+**Other threads** (human, Copilot): when you address the feedback, always
+**resolve the thread**, not just reply to it — a REST reply does not mark a
+thread resolved. Resolve via the GraphQL `resolveReviewThread` mutation:
 
 ```sh
 # list unresolved threads
