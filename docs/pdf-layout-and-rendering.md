@@ -119,13 +119,44 @@ Rendering one page of the 342 MB file with `pdftoppm`:
 - `pdftoppm` streams PDF on stdin to a single page's image on stdout when no
   output root is given.
 
+### 3.5 Crop box and rotation: TSV page sizes are not rotated
+
+Synthetic one-page fixtures (text at a known position; MediaBox 612 × 792;
+variants with a 400 × 292 CropBox and/or `/Rotate 90`), checked against the
+dark pixels of a 72 dpi `pdftoppm` render:
+
+- **`-cropbox` behaves the same in both tools.** With it, TSV's page size and
+  word coordinates are relative to the crop box, and `pdftoppm -cropbox`
+  renders exactly the crop box.
+- **TSV word boxes are rotated; TSV page sizes are not.** On the rotated page,
+  TSV gives the word box in displayed (rotated) coordinates, and it matches the
+  rendered ink: x 695–717, y 100–155 against ink at x 700–716, y 102–152 on a
+  792 × 612 image. The same holds with a crop box. But TSV's page row still
+  reports the unrotated size (612 × 792, or 400 × 292 with the crop box), and
+  TSV carries no rotation field. So TSV alone can't produce a correct page size
+  for a rotated page, blank pages included.
+- **`pdfinfo -f 1 -l <large> -box -`** reports, per page, the crop-box size
+  (unrotated) and the rotation (`Page 1 rot: 90`). It reads the PDF on stdin,
+  clamps a last-page number beyond the document, and took 0.14 s on the 342 MB
+  document (2,409 lines of output for 342 pages). It ships in `poppler-utils`
+  with `pdftotext` and `pdftoppm`.
+
+### 3.6 Default mode joins hyphenated line ends; TSV doesn't
+
+A line ending in `hyphen-` followed by `ated` on the next line comes out as
+`hyphenated` in default mode. TSV keeps both words as written, so text built
+verbatim from TSV words reads `hyphen-`, newline, `ated`. Text assembled from
+words therefore can't be identical to default-mode text. (Found in review with
+a synthetic Poppler 26.04.0 fixture.)
+
 ## 4. Scope
 
 In scope, in delivery order (§10):
 
 1. A layout text mode on the existing engine (`-layout`).
 2. A layout call returning every page's size and its words with boxes and
-   structure, from `pdftotext -tsv`.
+   structure, from `pdftotext -tsv` (words) and `pdfinfo` (page sizes and
+   rotation).
 3. Pure page-text assembly from those words, with two strategies, each giving
    every word's byte offsets in the text.
 4. Rendering one page to PNG or JPEG via `pdftoppm`.
@@ -184,10 +215,11 @@ type Layout struct {
 }
 
 type PageLayout struct {
-	Number int     // 1-based
-	Width  float64 // points, in the page box, after rotation
-	Height float64
-	Words  []Word  // in the engine's reading order
+	Number   int     // 1-based
+	Width    float64 // points: the crop box as displayed, i.e. after rotation
+	Height   float64
+	Rotation int     // 0, 90, 180 or 270, as declared by the page (informational)
+	Words    []Word  // in the engine's reading order
 }
 
 type Word struct {
@@ -205,32 +237,55 @@ type Rect struct{ X0, Y0, X1, Y1 float64 }
   will persist layouts (Morris persists its page sidecar today). Changes to the
   serialized form bump `Version`.
 - Every page is returned, with its size, even with no words. The `Extractor`
-  drops empty pages, but a UI still renders them, and this gives the page count
-  without a third binary (`pdfinfo`).
+  drops empty pages, but a UI still renders them. The page count and sizes come
+  from `pdfinfo` (§6.2).
 - Word ids: TSV's `block_num`/`line_num` are per-flow or per-block counters, so
   the parser renumbers them to be unique within the page.
 
-### 6.2 Implementation: `pdftotext -tsv -cropbox`
+### 6.2 Implementation: `pdfinfo` for geometry, `pdftotext -tsv -cropbox` for words
+
+`Layout` runs two subprocesses through the shared plumbing (§8):
+
+1. **Geometry: `pdfinfo -f 1 -l 1000000 -box -`.** Gives the page count and,
+   per page, the crop-box size and rotation (§3.5). `Width`/`Height` are that
+   size, swapped when the rotation is 90 or 270, so they describe the page as
+   displayed and as `pdftoppm` renders it. This is the only source of page
+   size and page count; TSV's page rows are used only to check page numbering.
+   - Rotation is normalized to 0/90/180/270 (PDF allows any multiple of 90,
+     including negative values); anything else is malformed output.
+   - Its output has its own small cap (default 16 MiB; it needs about 400
+     bytes per page, so that allows roughly 40,000 pages).
+2. **Words: `pdftotext -tsv -cropbox -enc UTF-8 -q - -`.** Word boxes come out
+   already in displayed coordinates (§3.5), so they are used as-is.
+
+Why these flags and tools:
 
 - `-tsv`, not `-bbox-layout`: it avoids the crash in §3.2, it's half the size
   (§3.4), and it parses with the standard library (no XML).
-- `-cropbox`, and the same flag for rendering (§7), so word boxes and images
-  share one coordinate space. The crop box is what viewers show.
+- `-cropbox` on every tool (`pdfinfo -box` reports it; `pdftoppm -cropbox`,
+  §7), so word boxes, page sizes and images share one coordinate space. The
+  crop box is what viewers show.
+- Consistency check: the number of TSV page rows must equal `pdfinfo`'s page
+  count, or the result is malformed output.
 - Parser rules:
   - Identify row kinds by the `level` column, never by the `###PAGE###`,
     `###FLOW###`, `###LINE###` sentinel text, which a document could contain.
   - Split each row into at most 12 fields, so a tab inside word text stays in
     the text field.
-  - Reject rows with fewer fields, unparseable numbers, or page numbers out of
-    order as malformed output (an engine error, §8), not silently skip them.
+  - Reject rows with fewer fields, unparseable numbers, non-finite numbers
+    (NaN, ±Inf), negative widths or heights, or page numbers out of order as
+    malformed output (an engine error, §8), not silently skip them.
+  - Coordinates may still be huge or far off the page (a valid PDF can place
+    text anywhere). The parser keeps them; consumers of coordinates, including
+    `AssemblePage` (§6.3), must not size anything from them.
   - Stream the output (line scanner over the capped stdout), don't buffer then
     parse.
 - Output cap: TSV is ≈13x the plain text, so the layout call has its own cap,
   `WithMaxLayoutBytes`, default 256 MiB. Reusing the 64 MiB text cap would make
   documents that extract fine as text fail on layout.
-- Rotation: TSV coordinates are reported after page rotation. A rotated-page
-  fixture (`/Rotate 90`) verifies Width/Height and boxes match what `pdftoppm`
-  renders.
+- Rotation: rotated-page fixtures (`/Rotate 90` and `270`, with and without a
+  crop box) verify that Width/Height and word boxes match what `pdftoppm`
+  renders (§11).
 
 ### 6.3 Page-text assembly
 
@@ -265,20 +320,38 @@ func AssemblePage(p PageLayout, s Strategy) PageText
 - **Byte offsets**, not rune offsets: Go strings and Morris's page spans are
   byte-indexed.
 - **`ReadingOrder`:** words in a line joined by one space; lines by `\n`;
-  blocks by a blank line. On the §3.1 sample this reproduces default-mode text
-  exactly; a corpus comparison test checks it on more documents.
+  blocks by a blank line. This is **close to, not identical to**, default-mode
+  text: default mode joins hyphenated line ends (§3.6) and the verbatim-span
+  invariant forbids that. On the §3.1 sample the two match exactly. A corpus
+  comparison (§11) measures and documents the differences; it is not a
+  guarantee of equality.
 - **`Rows`:** a word joins a row when its vertical extent overlaps the row's
   extent by at least half of the shorter height. This tolerates superscripts
   and mixed font sizes better than "any overlap". Within a row, words are
-  sorted by `X0`. Gaps wider than a threshold (relative to the row's median
-  character width) become a run of spaces proportional to the gap, so columns
-  read as separated; smaller gaps become one space. Rows are joined by `\n`,
-  ordered by their top.
+  sorted by `X0`. Rows are joined by `\n`, ordered by their top.
+- **Gaps between words in a row are bounded, never sized from raw
+  coordinates.** A valid PDF can put two tiny words hundreds of millions of
+  points apart, which a proportional rule would turn into billions of spaces
+  inside the worker, after the subprocess output cap has done its job. So:
+  - the unit is the row's median character width (word width ÷ rune count over
+    words with positive width), floored at 1 point; a row with no
+    positive-width word uses 1 point;
+  - a gap becomes `clamp(round(gap / unit), 1, MaxGapSpaces)` spaces, with
+    `MaxGapSpaces` = 8 (enough to read as a column break); overlapping or
+    negative gaps become one space;
+  - the result: assembled text is at most the words' bytes plus 8 bytes per
+    word plus one byte per row, so its size is bounded by the TSV output that
+    was already capped. A test asserts this bound on adversarial layouts
+    (huge gaps, zero-width words, all words on one row, one word per row).
 - **Known limits of `Rows`**, documented and tested rather than solved:
   skewed scans (a long line tilting across row boundaries), multi-column prose
   (interleaves), overlapping text. No deskewing in this version.
 - **Whitespace:** the assembled text needs no normalization pass (which would
   shift offsets): no trailing spaces, no leading or trailing blank lines.
+- **No dehyphenation in this version.** Joining `hyphen-` + `ated` would break
+  `Text[Start:End] == Word.Text`. If a consumer needs it (likely Morris, for
+  retrieval), it can come later as an additive option with a documented,
+  weaker span contract (a span may cover a joined form). Open question 6.
 
 ## 7. Page rendering
 
@@ -301,31 +374,43 @@ type RenderOptions struct {
 	DPI       float64 // target resolution; 0 → default 150
 	MaxPixels int     // hard limit on the longer side; 0 → default 2048
 	Quality   int     // JPEG only, 1–100; 0 → default 85
+	// PageWidth/PageHeight: the page as displayed (crop box, after rotation),
+	// in points, normally PageLayout.Width/Height. Zero → the renderer looks
+	// it up with pdfinfo (one extra subprocess).
+	PageWidth, PageHeight float64
 }
 
 type Image struct {
-	Data     []byte
-	Format   Format
-	Width    int     // actual pixels, read from the image header
-	Height   int
-	ScaleX   float64 // pixels per point actually applied: Width / page width in points
-	ScaleY   float64
+	Data       []byte
+	Format     Format
+	Width      int     // actual pixels, read from the image header
+	Height     int
+	PageWidth  float64 // the page size used, in points (as displayed)
+	PageHeight float64
+	ScaleX     float64 // pixels per point actually applied: Width / PageWidth
+	ScaleY     float64
 }
 
 func (r *Renderer) Render(ctx context.Context, data []byte, o RenderOptions) (*Image, error)
 ```
 
-- **Sizing:** DPI is a target, `MaxPixels` is the hard limit. The renderer works
-  out the requested scale from DPI, and if the longer side would exceed
-  `MaxPixels`, uses `-scale-to MaxPixels` instead. maestro-agents' review UI
-  asks for a DPI; images sent to a model need "fit within N px" for provider
-  limits.
+- **The page size is known before rendering.** The image alone can't give it:
+  after scaling down, differently sized pages with the same aspect ratio give
+  identical images, and the renderer must know the size up front to decide
+  whether the DPI would exceed `MaxPixels`. So the size comes from the caller
+  (usually from `Layout`, which already ran `pdfinfo`) or from the renderer's
+  own `pdfinfo` lookup through the same internal geometry helper (§6.2, §8).
+- **Sizing:** scale = min(DPI / 72, MaxPixels / longer side in points). The
+  renderer passes the resulting pixel size explicitly (`-scale-to-x` and
+  `-scale-to-y`) rather than a DPI, so the cap holds exactly. maestro-agents'
+  review UI asks for a DPI; images sent to a model need "fit within N px" for
+  provider limits.
 - **Report what was applied.** Width and height come from the PNG/JPEG header
   (`image.DecodeConfig`, stdlib), and the scale from those divided by the page
-  size, so callers convert point coordinates to pixels without assuming the DPI
-  was honored. Rendering needs the page size: the caller passes it (from
-  `Layout`), or the renderer reads it from the image size and the DPI it asked
-  for. (Open question 3.)
+  size used, so callers convert point coordinates to pixels without assuming
+  the DPI was honored. If the header's size disagrees with the requested size
+  by more than a pixel of rounding, the render fails as malformed output (the
+  page size the caller passed was wrong for this PDF).
 - **Format:** PNG default for born-digital pages (sharp text); JPEG for scanned
   pages, 4–10x faster and ~10x smaller (§3.4). The docs say which to pick.
 - `-cropbox`, matching §6.2.
@@ -355,16 +440,21 @@ until a consumer needs bulk rendering; ADR 0011 records it.
 
 ## 8. Shared subprocess plumbing and errors
 
-Before adding the second and third commands, move the subprocess code out of
-`pdftotext` into `extract/pdf/internal/popplerexec`:
+Before adding the new commands (`pdfinfo`, `pdftotext -tsv`, `pdftoppm`), move
+the subprocess code out of `pdftotext` into `extract/pdf/internal/popplerexec`:
 
 - binary lookup, timeout and cancellation;
 - the capped stdout writer (`capWriter`) and truncating stderr writer;
 - classifying the result in today's priority order: output cap, caller
   cancellation, own timeout, exit status, start failure.
 
+Alongside it, `extract/pdf/internal/geometry` runs and parses `pdfinfo` (§6.2),
+used by both `pdftotext.Layout` and `pdftoppm.Render`.
+
 Then `pdftotext.Pages`, `pdftotext.Layout` and `pdftoppm.Render` share one
-copy, so their safeguards can't drift apart. Each package keeps its exported
+copy, so their safeguards can't drift apart. The timeout applies per
+subprocess; `Layout`'s two calls share the caller's context. A missing
+`pdfinfo` makes `Layout` return `ErrEngineUnavailable` naming that binary. Each package keeps its exported
 sentinel errors (`ErrEngineUnavailable`, `ErrOutputTooLarge`) by wrapping the
 internal ones, so existing `errors.Is` checks keep working.
 
@@ -393,8 +483,11 @@ sources and `ErrNoContent` to its own error categories.
 Morris has said re-indexing is acceptable, so word offsets don't need to match
 today's `Page.Text`. What this design keeps open:
 
-- `ReadingOrder` text reproduces default-mode text (tested on a corpus), so
-  Morris can switch to layout-derived text without a retrieval-quality change.
+- `ReadingOrder` text is close to default-mode text but not identical (§3.6:
+  no dehyphenation). Morris's cutover therefore includes a retrieval-quality
+  check on its own fixtures, and possibly the dehyphenation option (open
+  question 6). This design measures the gap (§11) rather than promising it is
+  zero.
 - Byte offsets per word give page ranges directly (a page's range is its words'
   first and last spans plus the join separator).
 - The serialized `Layout` has JSON tags and a version, so Morris can persist it
@@ -415,7 +508,7 @@ when Morris plans the cutover.
 | Step | Contents | Release |
 |---|---|---|
 | 1 | `WithLayout()`, `pdf.mode` metadata, tests | v0.7.0 |
-| 2 | ADR 0011; move plumbing to `internal/popplerexec`; `ErrEngineCrashed`; `LayoutEngine`, TSV parser, `AssemblePage` | v0.8.0 |
+| 2 | ADR 0011; move plumbing to `internal/popplerexec`; `ErrEngineCrashed`; `internal/geometry` (`pdfinfo`); `LayoutEngine`, TSV parser, `AssemblePage` | v0.8.0 |
 | 3 | `extract/pdf/pdftoppm`; deployment notes | v0.9.0 |
 
 Each step is additive (no breaking changes) and its own PR. maestro-agents'
@@ -427,18 +520,27 @@ so the UI's highlights come from the same text the checks ran on.
 - **Unit tests without Poppler** (run in CI everywhere):
   - TSV parser on recorded TSV: level handling, the sentinel-text collision,
     tabs in word text, short rows, out-of-order pages, empty pages.
+  - `pdfinfo` parser on recorded output: rotation normalization (negative and
+    >360 values), page-count mismatch with TSV, missing pages.
   - `AssemblePage`: the `Text[Start:End] == Word.Text` property for both
     strategies over generated layouts; golden outputs for a statement-shaped
     layout (`Rows` keeps label and numbers together) and a two-column prose
-    layout (`ReadingOrder` keeps columns separate).
+    layout (`ReadingOrder` keeps columns separate); the size bound on
+    adversarial layouts (two tiny words ~10⁹ points apart, zero-width words,
+    NaN rejected earlier by the parser).
+  - Renderer sizing: scale chosen from DPI vs `MaxPixels`, and the
+    header-size check.
   - Error classification with a fake binary: exits non-zero, kills itself with
     SIGABRT (→ `ErrEngineCrashed`, also `ErrMalformedSource`), floods stdout
     (→ cap), sleeps (→ timeout), missing (→ unavailable).
 - **Integration tests with Poppler** (skipped when the binary is absent, as
   today), on synthetic fixtures committed to the repo:
   - a statement-shaped table (default vs `-layout`; `Rows` vs `ReadingOrder`);
-  - a rotated page (`/Rotate 90`): word boxes line up with the rendered image;
-  - CropBox ≠ MediaBox: word boxes and rendering agree;
+  - rotated pages (`/Rotate 90`, `270`), with and without a CropBox ≠
+    MediaBox: `PageLayout` size equals the rendered size at 72 dpi, and a known
+    word's box contains its rendered ink (the §3.5 check, automated);
+  - a blank rotated page: correct size with no words;
+  - a hyphenated line end: `ReadingOrder` keeps both halves (§3.6);
   - a blank page and an image-only page: present in `Layout`, renderable;
   - a non-embedded Helvetica: renders legibly (checks fonts are installed);
   - a reproduction of the §3.2 crash, if one can be made synthetically. We'll
@@ -450,7 +552,9 @@ so the UI's highlights come from the same text the checks ran on.
 
 ## 12. Deployment notes (for consumers' images)
 
-- Text and layout need only `pdftotext`. Rendering adds `pdftoppm`.
+- Text needs only `pdftotext`. Layout adds `pdfinfo`. Rendering adds
+  `pdftoppm` (and `pdfinfo` unless the caller passes the page size). All three
+  are in `poppler-utils`.
 - `pdftoppm` needs runtime data that an `ldd`-derived library closure (Morris's
   distroless approach, ADR 0047) doesn't carry:
   - fonts and a fontconfig configuration, or PDFs that don't embed their fonts
@@ -469,12 +573,13 @@ so the UI's highlights come from the same text the checks ran on.
    together as v0.8.0?
 2. **`pdf.mode` mechanism:** an optional `Mode()` interface on the engine (§5),
    or have the engine set metadata on `Page` (a new optional field)?
-3. **Renderer page size:** should `Render` take the page size from the caller
-   (from `Layout`), or report scale only from the requested DPI and the actual
-   pixels? The first is exact; the second avoids coupling the two packages.
-4. **`Rows` thresholds:** the overlap fraction and gap threshold are tuned on
+3. ~~Renderer page size~~ — resolved in review: inference from the image is
+   unsound, so the size comes from the caller or `pdfinfo` (§7.1).
+4. **`Rows` thresholds:** the overlap fraction and `MaxGapSpaces` are tuned on
    synthetic fixtures; maestro-agents can tune them on their confidential
-   samples. Expose them as options, or keep them internal until a second
-   consumer needs different values?
+   samples. Expose them as options (with the same hard ceiling), or keep them
+   internal until a second consumer needs different values?
 5. **Default layout cap:** 256 MiB is ≈4x the text cap; is that the right
    ceiling for a worker's heap?
+6. **Dehyphenation:** add it later as an option with a weaker span contract,
+   or leave it to consumers (who can post-process text, losing exact spans)?
