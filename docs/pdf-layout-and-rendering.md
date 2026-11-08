@@ -188,8 +188,8 @@ func WithLayout() Option // runs pdftotext with -layout
 - New metadata key `pdf.mode` (`MetaMode`) on each artifact: `"layout"` or
   `"raw"`, so stored text says which mode produced it. The pdftotext engine sets
   it. Since `pdf.Engine` has no way to report a mode, this needs a small
-  optional interface (e.g. `interface{ Mode() string }`) that the Extractor
-  checks; engines without it get no `pdf.mode` key.
+  optional interface, `pdf.ModeReporter` (`Mode() string`), that the
+  Extractor checks; engines without it get no `pdf.mode` key.
 - `Name()` stays `"pdftotext"`; the mode is a separate key.
 - `extract/preset` keeps the default mode. Changing it would change Morris's
   indexed text; a preset option can be added if wanted.
@@ -615,8 +615,10 @@ so the UI's highlights come from the same text the checks ran on.
 
 1. **Releases:** one minor release per step (as in §10), or steps 2 and 3
    together as v0.8.0?
-2. **`pdf.mode` mechanism:** an optional `Mode()` interface on the engine (§5),
-   or have the engine set metadata on `Page` (a new optional field)?
+2. ~~`pdf.mode` mechanism~~ — resolved in step 1: an optional
+   `pdf.ModeReporter` interface (`Mode() string`) that the Extractor checks
+   (§5). The mode is per engine, not per page, so a `Page` field would repeat
+   the same value on every page and widen a struct purego also fills.
 3. ~~Renderer page size~~ — resolved in review: inference from the image is
    unsound, and a caller-supplied size can't be validated, so the renderer
    always reads it with `pdfinfo` (§7.1).

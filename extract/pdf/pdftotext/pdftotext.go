@@ -57,6 +57,7 @@ type Engine struct {
 	binary    string
 	timeout   time.Duration
 	maxOutput int64
+	layout    bool
 }
 
 // Option configures an Engine.
@@ -72,6 +73,19 @@ func WithTimeout(d time.Duration) Option { return func(e *Engine) { e.timeout = 
 // DefaultMaxOutputBytes). Non-positive means the default.
 func WithMaxOutputBytes(n int64) Option { return func(e *Engine) { e.maxOutput = n } }
 
+// WithLayout runs pdftotext with -layout, which keeps each page's physical
+// layout: a table row's label and its values stay on one line, separated by
+// spaces, where the default mode can emit the label column and the value column
+// as separate blocks. Page splitting, timeout and output cap are unchanged. The
+// engine then reports pdf.ModeLayout (recorded as pdf.MetaMode); without this
+// option it reports pdf.ModeRaw.
+//
+// Column spacing is in Page.Text. pdf.Extractor normalizes whitespace, which
+// trims each line's leading and trailing spaces but keeps the gaps inside a
+// line; call Pages directly for the raw spacing. Character offsets in layout
+// text are not a reliable way to infer columns.
+func WithLayout() Option { return func(e *Engine) { e.layout = true } }
+
 // New returns a pdftotext Engine.
 func New(opts ...Option) *Engine {
 	e := &Engine{}
@@ -83,6 +97,24 @@ func New(opts ...Option) *Engine {
 
 // Name reports the engine identifier recorded on artifacts.
 func (e *Engine) Name() string { return "pdftotext" }
+
+// Mode reports the text mode (pdf.ModeLayout with WithLayout, else pdf.ModeRaw).
+// It implements pdf.ModeReporter.
+func (e *Engine) Mode() string {
+	if e.layout {
+		return pdf.ModeLayout
+	}
+	return pdf.ModeRaw
+}
+
+// args returns pdftotext's arguments: PDF from stdin, text to stdout, with a
+// form feed (\f) separating pages (page breaks are kept, not -nopgbrk).
+func (e *Engine) args() []string {
+	if e.layout {
+		return []string{"-layout", "-enc", "UTF-8", "-q", "-", "-"}
+	}
+	return []string{"-enc", "UTF-8", "-q", "-", "-"}
+}
 
 func (e *Engine) bin() string {
 	if e.binary != "" {
@@ -118,11 +150,10 @@ func (e *Engine) Pages(ctx context.Context, data []byte) ([]pdf.Page, error) {
 	cctx, cancel := context.WithTimeout(ctx, e.to())
 	defer cancel()
 
-	// pdftotext -enc UTF-8 -q - -  : PDF from stdin, text to stdout, with a
-	// form-feed (\f) separating pages (we keep page breaks rather than -nopgbrk).
-	// bin is operator-configured (WithBinary), the args are constant literals, and
-	// the PDF data is piped via stdin — there is no injection vector.
-	cmd := exec.CommandContext(cctx, bin, "-enc", "UTF-8", "-q", "-", "-") //nolint:gosec // see comment: fixed args, operator-configured binary, stdin input
+	// bin is operator-configured (WithBinary), the args are constant literals
+	// (see args), and the PDF data is piped via stdin — there is no injection
+	// vector.
+	cmd := exec.CommandContext(cctx, bin, e.args()...) //nolint:gosec // see comment: fixed args, operator-configured binary, stdin input
 	cmd.Stdin = bytes.NewReader(data)
 	stdout := &capWriter{limit: e.maxOut(), cancel: cancel}
 	stderr := &truncWriter{limit: stderrCapBytes}

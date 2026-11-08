@@ -75,6 +75,61 @@ func TestExtractPerPageArtifacts(t *testing.T) {
 	}
 }
 
+// modeEngine is a fakeEngine that also reports a text mode.
+type modeEngine struct {
+	fakeEngine
+	mode string
+}
+
+func (m modeEngine) Mode() string { return m.mode }
+
+var _ pdf.ModeReporter = modeEngine{}
+
+func TestExtractRecordsMode(t *testing.T) {
+	eng := modeEngine{fakeEngine: fakeEngine{pages: []pdf.Page{
+		{Number: 1, Text: "Ending balance   1,150.00"},
+		{Number: 2, Text: "Contributions    250.00"},
+	}}, mode: pdf.ModeLayout}
+	arts, err := pdf.New(pdf.WithEngine(eng)).Extract(context.Background(), strings.NewReader("x"), "s")
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if len(arts) != 2 {
+		t.Fatalf("got %d artifacts, want 2", len(arts))
+	}
+	for i, a := range arts {
+		if got := a.Metadata[pdf.MetaMode]; got != pdf.ModeLayout {
+			t.Fatalf("artifact %d mode = %q, want %q", i, got, pdf.ModeLayout)
+		}
+	}
+	// Gaps inside a line survive whitespace normalization.
+	if arts[0].Text != "Ending balance   1,150.00" {
+		t.Fatalf("text = %q, want inner gap preserved", arts[0].Text)
+	}
+}
+
+func TestExtractNoModeKeyWithoutReporter(t *testing.T) {
+	eng := fakeEngine{pages: []pdf.Page{{Number: 1, Text: "text"}}}
+	arts, err := pdf.New(pdf.WithEngine(eng)).Extract(context.Background(), strings.NewReader("x"), "s")
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if v, ok := arts[0].Metadata[pdf.MetaMode]; ok {
+		t.Fatalf("unexpected %s = %q for an engine without Mode()", pdf.MetaMode, v)
+	}
+}
+
+func TestExtractEmptyModeOmitted(t *testing.T) {
+	eng := modeEngine{fakeEngine: fakeEngine{pages: []pdf.Page{{Number: 1, Text: "text"}}}}
+	arts, err := pdf.New(pdf.WithEngine(eng)).Extract(context.Background(), strings.NewReader("x"), "s")
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if v, ok := arts[0].Metadata[pdf.MetaMode]; ok {
+		t.Fatalf("unexpected %s = %q for an empty Mode()", pdf.MetaMode, v)
+	}
+}
+
 func TestExtractAllBlankIsNoContent(t *testing.T) {
 	eng := fakeEngine{pages: []pdf.Page{{Number: 1, Text: "  "}, {Number: 2, Text: ""}}}
 	_, err := pdf.New(pdf.WithEngine(eng)).Extract(context.Background(), strings.NewReader("x"), "s")
