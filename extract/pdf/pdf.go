@@ -23,6 +23,13 @@
 // OCR is out of scope: an image-only page yields no text and is omitted; a PDF
 // with no extractable text yields extract.ErrNoContent. See
 // docs/adr/0010-pluggable-pdf-engines.md (which supersedes ADR 0007).
+//
+// Word positions: engines that can report them implement the optional
+// LayoutEngine (pdftotext does), which returns every page's size and its words
+// with boxes. AssemblePage then builds a page's text from those words, either
+// in the engine's reading order or by geometric rows (which keeps a table
+// row's label and values on one line), with each word's byte span in the text.
+// See docs/adr/0011-pdf-word-positions-and-layout-assembly.md.
 package pdf
 
 import (
@@ -65,6 +72,14 @@ const (
 // PDF extraction has no safe zero-config default, so a parser must be chosen
 // explicitly via WithEngine.
 var ErrNoEngine = errors.New("pdf: no engine configured (use pdf.WithEngine)")
+
+// ErrEngineCrashed indicates an out-of-process engine died from a signal (for
+// example SIGABRT or SIGSEGV) instead of exiting. The returned error also
+// matches extract.ErrMalformedSource: a crash on bad input and a crash on an
+// engine bug can't be told apart reliably, so it fails closed as malformed, and
+// callers that only check ErrMalformedSource behave as before. Check this
+// sentinel to tell operators it was a crash; the message names the signal.
+var ErrEngineCrashed = errors.New("pdf: engine crashed")
 
 // Page is one page's extracted text.
 type Page struct {

@@ -1,6 +1,6 @@
 # ADR 0010: PDF extraction uses pluggable engines; out-of-process pdftotext is the recommended one
 
-- Status: Accepted (supersedes [ADR 0007](0007-pdf-extraction-watchdog-stopgap.md))
+- Status: Accepted (supersedes [ADR 0007](0007-pdf-extraction-watchdog-stopgap.md); extended by [ADR 0011](0011-pdf-word-positions-and-layout-assembly.md))
 - Date: 2026-06-29
 
 ## Context

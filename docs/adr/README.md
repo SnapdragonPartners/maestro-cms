@@ -23,3 +23,6 @@ described in an ADR without superseding it.
   faithful extraction in the library, semantics in the app (deferred).
 - [0010](0010-pluggable-pdf-engines.md) — PDF extraction uses pluggable engines;
   out-of-process pdftotext recommended, pure-Go fallback, no unsafe default.
+- [0011](0011-pdf-word-positions-and-layout-assembly.md) — PDF word positions
+  come from pdftotext -tsv plus pdfinfo; page text is assembled by a pure
+  function (extends 0010).
