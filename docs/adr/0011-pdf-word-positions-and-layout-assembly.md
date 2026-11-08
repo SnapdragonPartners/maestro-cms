@@ -94,7 +94,8 @@ decisions step 3 (rendering, v0.9.0) builds on.
 - **`extract/pdf/internal/popplerexec`** holds binary lookup, timeout and kill,
   a counting stdout cap around any sink, the truncated stderr, and one
   classification order: output cap, caller cancellation, own timeout,
-  consumer abort, signal, non-zero exit, start failure. Its `Stream` mode hands
+  consumer abort, then, for a failed run, start failure, signal, non-zero exit
+  (mutually exclusive). Its `Stream` mode hands
   stdout to a parser goroutine through a pipe and kills the child if the parser
   fails, so the child can't block on a full pipe. Engines keep their exported
   sentinels (`ErrEngineUnavailable`, `ErrOutputTooLarge`) by passing them in.

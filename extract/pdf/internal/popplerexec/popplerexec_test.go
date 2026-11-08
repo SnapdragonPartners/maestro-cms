@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -220,9 +221,9 @@ func TestErrorsNameTheTool(t *testing.T) {
 	}
 }
 
-// When the timeout fires while a consumer is also failing, the timeout is
-// reported: it is the likelier cause.
-func TestStreamTimeoutOutranksConsumerError(t *testing.T) {
+// A consumer that fails on output a timed-out child left incomplete gets the
+// timeout reported, not its own error.
+func TestStreamTimeoutBeatsLateConsumerError(t *testing.T) {
 	s := spec(fakeBin(t, "printf 'partial'; exec sleep 10"))
 	s.Timeout = 200 * time.Millisecond
 	err := Stream(context.Background(), s, func(r io.Reader) error {
@@ -231,5 +232,26 @@ func TestStreamTimeoutOutranksConsumerError(t *testing.T) {
 	})
 	if !errors.Is(err, extract.ErrMalformedSource) || !strings.Contains(err.Error(), "exceeded") {
 		t.Fatalf("err = %v, want the timeout", err)
+	}
+}
+
+// White-box: with the abort flag set and the run already past its deadline,
+// run reports the timeout, not errAborted. Pins the check order in run.
+func TestRunTimeoutOutranksAbort(t *testing.T) {
+	aborted := &atomic.Bool{}
+	aborted.Store(true)
+	runCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	err := run(context.Background(), runCtx, spec(fakeBin(t, "cat")), io.Discard, aborted)
+	if errors.Is(err, errAborted) || !errors.Is(err, extract.ErrMalformedSource) || !strings.Contains(err.Error(), "exceeded") {
+		t.Fatalf("err = %v, want the timeout", err)
+	}
+
+	// And an abort without a deadline is reported as the abort.
+	runCtx2, cancel2 := context.WithCancel(context.Background())
+	cancel2()
+	err = run(context.Background(), runCtx2, spec(fakeBin(t, "cat")), io.Discard, aborted)
+	if !errors.Is(err, errAborted) {
+		t.Fatalf("err = %v, want errAborted", err)
 	}
 }

@@ -59,9 +59,10 @@ var errAborted = errors.New("popplerexec: consumer aborted")
 // Run runs the child and copies its stdout into sink, through the output cap.
 // The result is classified in this order: output cap (ErrTooLarge), caller
 // cancellation (a context error), own timeout (malformed source), (for Stream)
-// a consumer error, death by a
-// signal (pdf.ErrEngineCrashed, which also matches extract.ErrMalformedSource),
-// non-zero exit (malformed source), failure to start (an operational error).
+// a consumer error; then, for a run that failed, failure to start (an
+// operational error), death by a signal (pdf.ErrEngineCrashed, which also
+// matches extract.ErrMalformedSource) or a non-zero exit (malformed source),
+// which are mutually exclusive.
 // A missing binary returns ErrUnavailable before anything runs.
 func Run(ctx context.Context, s Spec, sink io.Writer) error {
 	return run(ctx, ctx, s, sink, nil)
@@ -143,9 +144,10 @@ func run(callerCtx, runCtx context.Context, s Spec, sink io.Writer, aborted *ato
 		return fmt.Errorf("%s: canceled: %w", s.Name, callerCtx.Err())
 	}
 	// Our own timeout fired (caller still alive): the parse was too slow or hung.
-	// It outranks a consumer abort, since output cut short by the timeout can
-	// make the consumer fail too. A consumer abort cancels runCtx, which leaves
-	// cctx Canceled, not DeadlineExceeded.
+	// It outranks a consumer abort when the two race: a hung or slow engine is
+	// the more useful diagnosis. A consumer abort cancels runCtx, which leaves
+	// cctx Canceled, not DeadlineExceeded, so the abort alone never looks like
+	// a timeout.
 	if errors.Is(cctx.Err(), context.DeadlineExceeded) {
 		return &extract.MalformedSourceError{
 			MediaType: pdf.MediaType,

@@ -478,8 +478,10 @@ the subprocess code out of `pdftotext` into `extract/pdf/internal/popplerexec`:
     full pipe; the run waits for both the child and the parser before
     classifying the result. A cap hit, timeout or cancellation still wins
     over a parse error, in today's priority order;
-- classifying the result in today's priority order: output cap, caller
-  cancellation, own timeout, exit status, start failure.
+- classifying the result in one priority order: output cap, caller
+  cancellation, own timeout, (for streaming) a parser abort, then, for a run
+  that failed, start failure, death by a signal, non-zero exit (these three are
+  mutually exclusive).
 
 Alongside it, `extract/pdf/internal/geometry` runs and parses `pdfinfo` (§6.2),
 used by both `pdftotext.Layout` and `pdftoppm.Render`.
