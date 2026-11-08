@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "models": {
+    "default": {
+      "provider": "openai-compatible",
+      "base_url": "https://gw.lunaroute.com/v1",
+      "model": "deepseek-4.1-flash",
+      "api_key_env": "LUNAROUTE_API_KEY",
+      "max_output_tokens": 32768,
+      "reasoning_effort": "medium"
+    }
+  },
+  "limits": {
+    "pass_deadline": "55m",
+    "max_concurrency": 1
+  },
+  "review": {
+    "exclude": ["**/go.sum", "vendor/**", "**/testdata/**"],
+    "instruction_files": ["CLAUDE.md", "docs/spec-v1.md"],
+    "instructions": "maestro-cms is an app-neutral library: product policy from Morris, Cooper or Maestro must not leak into it, and core packages stay provider- and storage-neutral (optional adapters live in subpackages). docs/spec-v1.md is the planning document and the ADRs in docs/adr are the decisions of record; a limitation an ADR documents is deliberate, not a defect, but drift between the code and those documents is. Each PR body lists what it intentionally does not do."
+  }
+}
