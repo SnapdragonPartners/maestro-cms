@@ -18,7 +18,8 @@
 //	reg.Register(pdf.MediaType, pdf.New(pdf.WithEngine(pdftotext.New())))
 //
 // Output is one text/plain artifact PER PAGE (page provenance matters for
-// retrieval), each tagged with its page number and the engine name in Metadata.
+// retrieval), each tagged with its page number and the engine name in Metadata,
+// plus the text mode for engines that report one (ModeReporter).
 // OCR is out of scope: an image-only page yields no text and is omitted; a PDF
 // with no extractable text yields extract.ErrNoContent. See
 // docs/adr/0010-pluggable-pdf-engines.md (which supersedes ADR 0007).
@@ -43,6 +44,21 @@ const (
 	MetaPage = "pdf.page"
 	// MetaEngine is the Name() of the engine that produced the text.
 	MetaEngine = "pdf.engine"
+	// MetaMode is the text mode the engine ran in, normally ModeLayout or
+	// ModeRaw; an engine may report another value, so treat it as an open set.
+	// It is set only when the engine implements ModeReporter and reports a
+	// non-empty mode.
+	MetaMode = "pdf.mode"
+)
+
+// Values of MetaMode.
+const (
+	// ModeLayout means the engine kept the page's physical layout, so a table
+	// row's label and values stay on one line (pdftotext -layout).
+	ModeLayout = "layout"
+	// ModeRaw means the engine emitted text in its default flow order, which can
+	// split a table's label column from its value column.
+	ModeRaw = "raw"
 )
 
 // ErrNoEngine is returned by Extract when the Extractor has no engine configured.
@@ -71,6 +87,17 @@ type Engine interface {
 	Pages(ctx context.Context, data []byte) ([]Page, error)
 }
 
+// ModeReporter is an optional interface for engines that can run in more than
+// one text mode. When the configured engine implements it, the Extractor records
+// Mode() under MetaMode on every artifact, so stored text says which mode
+// produced it. Engines without it, or whose Mode() returns "", get no MetaMode
+// key; any other value is stored as given. It is separate from Engine so
+// existing engines need no change.
+type ModeReporter interface {
+	// Mode reports the engine's text mode, normally ModeLayout or ModeRaw.
+	Mode() string
+}
+
 // Extractor extracts text from application/pdf sources via its configured Engine.
 // The zero value has no engine and returns ErrNoEngine; use New(WithEngine(...)).
 // It is safe for concurrent use if its engine is.
@@ -97,7 +124,8 @@ func New(opts ...Option) *Extractor {
 }
 
 // Extract reads r as a PDF and returns one text/plain artifact per non-empty
-// page, derived from parentID, each tagged with MetaPage and MetaEngine. It
+// page, derived from parentID, each tagged with MetaPage and MetaEngine (and
+// MetaMode when the engine implements ModeReporter). It
 // honors ctx cancellation while reading. It returns:
 //
 //   - ErrNoEngine if no engine is configured;
@@ -118,20 +146,28 @@ func (e Extractor) Extract(ctx context.Context, r io.Reader, parentID string) ([
 	}
 
 	name := e.engine.Name()
+	mode := ""
+	if mr, ok := e.engine.(ModeReporter); ok {
+		mode = mr.Mode()
+	}
 	arts := make([]content.Artifact, 0, len(pages))
 	for i := range pages {
 		text := extract.NormalizeWhitespace(pages[i].Text)
 		if text == "" {
 			continue // drop blank / image-only pages rather than emit empty artifacts
 		}
+		meta := map[string]string{
+			MetaPage:   strconv.Itoa(pages[i].Number),
+			MetaEngine: name,
+		}
+		if mode != "" {
+			meta[MetaMode] = mode
+		}
 		arts = append(arts, content.Artifact{
 			MediaType:   extract.MediaTypeText,
 			DerivedFrom: parentID,
 			Text:        text,
-			Metadata: map[string]string{
-				MetaPage:   strconv.Itoa(pages[i].Number),
-				MetaEngine: name,
-			},
+			Metadata:    meta,
 		})
 	}
 	if len(arts) == 0 {
