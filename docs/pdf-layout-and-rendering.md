@@ -467,7 +467,7 @@ the subprocess code out of `pdftotext` into `extract/pdf/internal/popplerexec`:
 - binary lookup, timeout and cancellation;
 - a **sink-based** stdout cap and the truncating stderr writer. Today's
   `capWriter` both counts and stores (it owns a `bytes.Buffer`), which would
-  keep up to 256 MiB of raw TSV in memory. The refactor splits the two: the
+  keep up to the layout cap (§6.2) of raw TSV in memory. The refactor splits the two: the
   cap is a counting wrapper around any `io.Writer` sink that cancels the child
   when the limit is crossed.
   - Text and image calls pass a `bytes.Buffer` as the sink, so they behave as
