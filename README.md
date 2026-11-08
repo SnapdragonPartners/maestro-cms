@@ -55,7 +55,7 @@ Where a behavior is broadly useful, Maestro CMS can define an interface or helpe
 
 Early package boundaries may include:
 
-- `extract`: MIME-aware text extraction from PDF, DOCX, HTML, Markdown, and plain text.
+- `extract`: MIME-aware text extraction from PDF, DOCX, HTML, Markdown, and plain text; PDF word positions and page rendering via Poppler.
 - `chunk`: chunking interfaces and implementations for prose, documents, and code.
 - `tokens`: token counting, estimation, and budget-aware truncation.
 - `content`: source, version, artifact, media type, and provenance primitives.

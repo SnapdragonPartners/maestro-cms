@@ -237,9 +237,9 @@ func TestLayoutRealRotation(t *testing.T) {
 	needPoppler(t)
 	pages := make([]fixturePage, 0, len(rotationCases)+1)
 	for _, c := range rotationCases {
-		pages = append(pages, fixturePage{content: rotatedText, extra: c.extra})
+		pages = append(pages, fixturePage{Content: rotatedText, Extra: c.extra})
 	}
-	pages = append(pages, fixturePage{extra: "/Rotate 90"}) // blank rotated page
+	pages = append(pages, fixturePage{Extra: "/Rotate 90"}) // blank rotated page
 	data := makePDFPages(pages...)
 
 	l, err := pdftotext.New().Layout(context.Background(), data)
@@ -277,8 +277,8 @@ func TestLayoutRealRotation(t *testing.T) {
 // checkInk renders the page at 72 dpi with pdftoppm -cropbox (so one pixel is
 // one point) and checks the image is the page's displayed size and that the
 // dark pixels lie inside the word's box, within a small tolerance for glyph
-// side bearings. It skips without pdftoppm. The renderer of #25 step 3 will
-// repeat this through its own sizing.
+// side bearings. It skips without pdftoppm. The pdftoppm package repeats this
+// through Renderer.Render's own sizing (TestRenderRealRotation).
 func checkInk(t *testing.T, data []byte, p pdf.PageLayout) {
 	t.Helper()
 	if _, err := exec.LookPath("pdftoppm"); err != nil {

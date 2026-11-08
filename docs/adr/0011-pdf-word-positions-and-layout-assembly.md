@@ -112,7 +112,10 @@ decisions step 3 (rendering, v0.9.0) builds on.
 - **One minor release per step:** step 2 is v0.8.0, step 3 (`extract/pdf/pdftoppm`
   and deployment notes) is v0.9.0.
 - Step 3's renderer reads page sizes through `internal/geometry` itself and
-  takes none from the caller. Range rendering is deferred until a consumer
+  takes none from the caller. As built (v0.9.0) it probes pages 1..N rather
+  than N alone, because `pdfinfo -f N` past the last page exits as a usage
+  error indistinguishable from a malformed PDF; 1..N gives the page count, so
+  a page past the end returns `ErrPageOutOfRange`. Range rendering is deferred until a consumer
   needs bulk rendering (it would need a private temporary directory under a
   total output cap).
 
