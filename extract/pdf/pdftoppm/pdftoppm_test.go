@@ -173,6 +173,8 @@ func TestRenderFakeErrors(t *testing.T) {
 	}{
 		{name: "page past end", pages: 2, o: RenderOptions{Page: 3}, want: ErrPageOutOfRange},
 		{name: "wrong size", pages: 1, script: func(t *testing.T) string { return "cat " + pngFile(t, 1275, 1600) }, malformed: true},
+		// Within the rounding tolerance of 1275x1650, but above MaxPixels.
+		{name: "above MaxPixels", pages: 1, script: func(t *testing.T) string { return "cat " + pngFile(t, 1276, 1651) }, o: RenderOptions{MaxPixels: 1650}, malformed: true},
 		{name: "wrong format", pages: 1, script: func(t *testing.T) string { return "cat " + pngFile(t, 1275, 1650) }, o: RenderOptions{Format: JPEG}, malformed: true},
 		{name: "not an image", script: func(*testing.T) string { return "echo hello" }, malformed: true},
 		{name: "empty output", script: func(*testing.T) string { return "true" }, malformed: true},
@@ -203,6 +205,42 @@ func TestRenderFakeErrors(t *testing.T) {
 			}
 			if d := time.Since(start); d > 4*time.Second {
 				t.Errorf("took %s", d)
+			}
+		})
+	}
+}
+
+// TestRenderPdfinfoErrors drives failures through the pdfinfo probe.
+func TestRenderPdfinfoErrors(t *testing.T) {
+	cases := []struct {
+		name      string
+		script    string
+		want      error
+		malformed bool
+	}{
+		{name: "exit 1", script: "exit 1", malformed: true},
+		{name: "crash", script: "kill -ABRT $$", want: pdf.ErrEngineCrashed, malformed: true},
+		{name: "no Pages line", script: "echo garbage", malformed: true},
+		{name: "duplicate page", script: `printf 'Pages: 1\nPage 1 rot: 0\nPage 1 CropBox: 0 0 612 792\nPage 1 rot: 0\n'`, malformed: true},
+		{name: "missing page", script: `printf 'Pages: 1\n'`, malformed: true},
+		{name: "flood", script: "exec yes 'Page 1 rot: 0'", want: ErrOutputTooLarge},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := New(WithPdfinfoBinary(fakeBin(t, "pdfinfo", tc.script)),
+				WithBinary(fakeBin(t, "pdftoppm", "exit 3")), WithTimeout(10*time.Second))
+			_, err := r.Render(context.Background(), []byte("%PDF"), RenderOptions{Page: 1})
+			if err == nil {
+				t.Fatal("Render succeeded")
+			}
+			if tc.want != nil && !errors.Is(err, tc.want) {
+				t.Errorf("err = %v, want %v", err, tc.want)
+			}
+			if got := errors.Is(err, extract.ErrMalformedSource); got != tc.malformed {
+				t.Errorf("malformed = %v, want %v (err %v)", got, tc.malformed, err)
+			}
+			if !strings.Contains(err.Error(), "pdfinfo") {
+				t.Errorf("err = %v, want it to name pdfinfo", err)
 			}
 		})
 	}

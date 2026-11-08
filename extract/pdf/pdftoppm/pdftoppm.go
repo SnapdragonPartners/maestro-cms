@@ -73,13 +73,15 @@ const maxPage = 40_000
 // message names the missing binary.
 var ErrEngineUnavailable = errors.New("pdftoppm: binary not found on PATH")
 
-// ErrOutputTooLarge indicates the encoded image exceeded the output cap; the
-// process is killed and this is returned. It is a resource limit, distinct from
-// a malformed PDF.
+// ErrOutputTooLarge indicates a subprocess exceeded its output cap and was
+// killed: usually pdftoppm's encoded image (WithMaxOutputBytes), or, rarely,
+// pdfinfo's page probe (a fixed 16 MiB, about 40,000 pages). The message names
+// the tool. It is a resource limit, distinct from a malformed PDF.
 var ErrOutputTooLarge = errors.New("pdftoppm: output exceeds size limit")
 
-// ErrPageOutOfRange indicates RenderOptions.Page is below 1 or past the
-// document's last page.
+// ErrPageOutOfRange indicates RenderOptions.Page is below 1, past the
+// document's last page, or above the largest page Render supports (40,000,
+// a bound of its page probe); the message says which.
 var ErrPageOutOfRange = errors.New("pdftoppm: page out of range")
 
 // ErrInvalidOptions indicates a RenderOptions field is out of its allowed
@@ -247,7 +249,7 @@ func (r *Renderer) Render(ctx context.Context, data []byte, o RenderOptions) (*I
 	if runErr := popplerexec.Run(ctx, s, &out); runErr != nil {
 		return nil, runErr //nolint:wrapcheck // classified sentinel/malformed/ctx errors
 	}
-	gotW, gotH, err := checkHeader(out.Bytes(), o.Format, w, h)
+	gotW, gotH, err := checkHeader(out.Bytes(), o.Format, w, h, o.MaxPixels)
 	if err != nil {
 		return nil, &extract.MalformedSourceError{MediaType: pdf.MediaType, Err: err}
 	}
@@ -266,7 +268,7 @@ func (r *Renderer) Render(ctx context.Context, data []byte, o RenderOptions) (*I
 // normalize validates o and fills in defaults.
 func normalize(o RenderOptions) (RenderOptions, error) {
 	if o.Page < 1 || o.Page > maxPage {
-		return o, fmt.Errorf("%w: page %d (supported: 1..%d)", ErrPageOutOfRange, o.Page, maxPage)
+		return o, fmt.Errorf("%w: page %d (Render supports pages 1..%d)", ErrPageOutOfRange, o.Page, maxPage)
 	}
 	if o.Format != PNG && o.Format != JPEG {
 		return o, fmt.Errorf("%w: unknown format %d", ErrInvalidOptions, int(o.Format))
@@ -320,8 +322,9 @@ func renderArgs(o RenderOptions, w, h int) []string {
 }
 
 // checkHeader decodes the image header and checks it is the requested format
-// and, within a pixel of rounding, the requested size.
-func checkHeader(b []byte, f Format, wantW, wantH int) (int, int, error) {
+// and, within a pixel of rounding, the requested size. The rounding tolerance
+// never lets a side exceed maxPixels, which callers rely on as a hard limit.
+func checkHeader(b []byte, f Format, wantW, wantH, maxPixels int) (int, int, error) {
 	cfg, name, err := image.DecodeConfig(bytes.NewReader(b))
 	if err != nil {
 		return 0, 0, fmt.Errorf("pdftoppm output is not an image: %w", err)
@@ -331,6 +334,9 @@ func checkHeader(b []byte, f Format, wantW, wantH int) (int, int, error) {
 	}
 	if absInt(cfg.Width-wantW) > 1 || absInt(cfg.Height-wantH) > 1 {
 		return 0, 0, fmt.Errorf("pdftoppm wrote %dx%d, want %dx%d", cfg.Width, cfg.Height, wantW, wantH)
+	}
+	if max(cfg.Width, cfg.Height) > maxPixels {
+		return 0, 0, fmt.Errorf("pdftoppm wrote %dx%d, above MaxPixels %d", cfg.Width, cfg.Height, maxPixels)
 	}
 	return cfg.Width, cfg.Height, nil
 }
