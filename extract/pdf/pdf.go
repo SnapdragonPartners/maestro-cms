@@ -44,8 +44,10 @@ const (
 	MetaPage = "pdf.page"
 	// MetaEngine is the Name() of the engine that produced the text.
 	MetaEngine = "pdf.engine"
-	// MetaMode is the text mode the engine ran in (ModeLayout or ModeRaw). It is
-	// set only when the engine implements ModeReporter.
+	// MetaMode is the text mode the engine ran in, normally ModeLayout or
+	// ModeRaw; an engine may report another value, so treat it as an open set.
+	// It is set only when the engine implements ModeReporter and reports a
+	// non-empty mode.
 	MetaMode = "pdf.mode"
 )
 
@@ -88,8 +90,9 @@ type Engine interface {
 // ModeReporter is an optional interface for engines that can run in more than
 // one text mode. When the configured engine implements it, the Extractor records
 // Mode() under MetaMode on every artifact, so stored text says which mode
-// produced it. Engines without it get no MetaMode key. It is separate from
-// Engine so existing engines need no change.
+// produced it. Engines without it, or whose Mode() returns "", get no MetaMode
+// key; any other value is stored as given. It is separate from Engine so
+// existing engines need no change.
 type ModeReporter interface {
 	// Mode reports the engine's text mode, normally ModeLayout or ModeRaw.
 	Mode() string

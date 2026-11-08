@@ -38,8 +38,10 @@ but nothing here may rule it out (§9).
   `pdf.Extractor` normalizes each page's whitespace (`extract.NormalizeWhitespace`:
   trims each line's ends, collapses blank lines), drops empty pages, and emits one
   `text/plain` artifact per page with `pdf.page` and `pdf.engine` metadata.
+  (Step 1 adds `pdf.mode` for engines that report a mode; see §5.)
 - `pdftotext.Engine` runs `pdftotext -enc UTF-8 -q - -` (PDF on stdin, text on
-  stdout, pages split on form feeds), with:
+  stdout, pages split on form feeds; step 1 adds `-layout` under `WithLayout()`),
+  with:
   - a per-call timeout (default 30 s), killed on timeout or caller cancellation;
   - a 64 MiB stdout cap (`ErrOutputTooLarge`) and a 64 KiB stderr cap;
   - `ErrEngineUnavailable` when the binary is missing;

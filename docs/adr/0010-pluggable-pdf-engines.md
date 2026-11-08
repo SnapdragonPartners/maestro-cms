@@ -38,7 +38,8 @@ The realistic ways to do PDF text extraction well:
   `pdftotext` when present, falling back otherwise, may be added as an app-level
   convenience.)
 - **`extract/pdf/pdftotext` (out-of-process Poppler) is the recommended engine**
-  for production and untrusted input. It runs `pdftotext -enc UTF-8 -q - -`,
+  for production and untrusted input. It runs `pdftotext -enc UTF-8 -q - -`
+  (or, with `WithLayout()`, the same with `-layout`; added in v0.7.0 for #25),
   killed on timeout/cancellation; missing binary → `ErrEngineUnavailable`. Adds
   no Go dependency. `extract/preset` wires it as the bundle's PDF engine.
 - **`extract/pdf/purego` (dslipak + watchdog) is kept as an explicit fallback**
@@ -48,7 +49,10 @@ The realistic ways to do PDF text extraction well:
 - **MuPDF/`go-fitz` is kept out of the Go module entirely** (AGPL). If anyone
   wants MuPDF, it is run out-of-process like Poppler — never linked.
 - **Output is one artifact per page** (page provenance matters for retrieval),
-  tagged with page number and engine name in `Metadata`. OCR stays out of scope:
+  tagged with page number and engine name in `Metadata` (`pdf.page`,
+  `pdf.engine`), plus the text mode (`pdf.mode`: `layout` or `raw`) for engines
+  that implement the optional `pdf.ModeReporter` (added in v0.7.0 for #25; the
+  pdftotext engine does). OCR stays out of scope:
   image-only pages are dropped; a text-less PDF yields `ErrNoContent`.
 
 ### Licensing boundary (framing)
