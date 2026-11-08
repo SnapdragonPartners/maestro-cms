@@ -203,3 +203,33 @@ func TestStreamChildFailureWinsOverLateConsumerError(t *testing.T) {
 		t.Fatalf("err = %v, want the child's exit", err)
 	}
 }
+
+// Sentinel errors carry the tool's own name, not the caller package's.
+func TestErrorsNameTheTool(t *testing.T) {
+	s := spec("maestro-cms-no-such-binary-xyz")
+	s.Name = "pdfinfo"
+	err := Run(context.Background(), s, io.Discard)
+	if !errors.Is(err, errUnavail) || !strings.HasPrefix(err.Error(), "pdfinfo: ") {
+		t.Fatalf("unavailable err = %q", err)
+	}
+	s = spec(fakeBin(t, "exec yes"))
+	s.Name, s.MaxOutput = "pdfinfo", 4096
+	err = Run(context.Background(), s, io.Discard)
+	if !errors.Is(err, errTooLarge) || !strings.HasPrefix(err.Error(), "pdfinfo: ") || !strings.Contains(err.Error(), "4096") {
+		t.Fatalf("too-large err = %q", err)
+	}
+}
+
+// When the timeout fires while a consumer is also failing, the timeout is
+// reported: it is the likelier cause.
+func TestStreamTimeoutOutranksConsumerError(t *testing.T) {
+	s := spec(fakeBin(t, "printf 'partial'; exec sleep 10"))
+	s.Timeout = 200 * time.Millisecond
+	err := Stream(context.Background(), s, func(r io.Reader) error {
+		_, _ = io.Copy(io.Discard, r)
+		return errors.New("short row")
+	})
+	if !errors.Is(err, extract.ErrMalformedSource) || !strings.Contains(err.Error(), "exceeded") {
+		t.Fatalf("err = %v, want the timeout", err)
+	}
+}

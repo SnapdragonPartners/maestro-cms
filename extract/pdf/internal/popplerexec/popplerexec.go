@@ -44,9 +44,11 @@ type Spec struct {
 	// MaxOutput caps the bytes the child may write to stdout. Crossing it kills
 	// the child and the call returns ErrTooLarge.
 	MaxOutput int64
-	// ErrUnavailable is wrapped when Binary is not found.
+	// ErrUnavailable is matched (errors.Is) by the error returned when Binary
+	// is not found; the message names Name and Binary.
 	ErrUnavailable error
-	// ErrTooLarge is wrapped when stdout crosses MaxOutput.
+	// ErrTooLarge is matched by the error returned when stdout crosses
+	// MaxOutput; the message names Name and the limit.
 	ErrTooLarge error
 }
 
@@ -56,7 +58,8 @@ var errAborted = errors.New("popplerexec: consumer aborted")
 
 // Run runs the child and copies its stdout into sink, through the output cap.
 // The result is classified in this order: output cap (ErrTooLarge), caller
-// cancellation (a context error), own timeout (malformed source), death by a
+// cancellation (a context error), own timeout (malformed source), (for Stream)
+// a consumer error, death by a
 // signal (pdf.ErrEngineCrashed, which also matches extract.ErrMalformedSource),
 // non-zero exit (malformed source), failure to start (an operational error).
 // A missing binary returns ErrUnavailable before anything runs.
@@ -113,7 +116,7 @@ func Stream(ctx context.Context, s Spec, consume func(io.Reader) error) error {
 // that a Stream consumer killed the child.
 func run(callerCtx, runCtx context.Context, s Spec, sink io.Writer, aborted *atomic.Bool) error {
 	if _, err := exec.LookPath(s.Binary); err != nil {
-		return fmt.Errorf("%w: %q", s.ErrUnavailable, s.Binary)
+		return &labeled{msg: fmt.Sprintf("%s: binary %q not found on PATH", s.Name, s.Binary), sentinel: s.ErrUnavailable}
 	}
 
 	cctx, cancel := context.WithTimeout(runCtx, s.Timeout)
@@ -133,21 +136,24 @@ func run(callerCtx, runCtx context.Context, s Spec, sink io.Writer, aborted *ato
 	// Exceeding the cap kills the child (via cancel), so the cap is checked first
 	// or the resulting kill would be misread below.
 	if stdout.exceeded {
-		return fmt.Errorf("%w (%d bytes)", s.ErrTooLarge, s.MaxOutput)
+		return &labeled{msg: fmt.Sprintf("%s: output exceeds size limit (%d bytes)", s.Name, s.MaxOutput), sentinel: s.ErrTooLarge}
 	}
 	// Caller cancellation/deadline takes priority and is not a malformed source.
 	if callerCtx.Err() != nil {
 		return fmt.Errorf("%s: canceled: %w", s.Name, callerCtx.Err())
 	}
-	if aborted != nil && aborted.Load() {
-		return errAborted
-	}
 	// Our own timeout fired (caller still alive): the parse was too slow or hung.
-	if cctx.Err() != nil {
+	// It outranks a consumer abort, since output cut short by the timeout can
+	// make the consumer fail too. A consumer abort cancels runCtx, which leaves
+	// cctx Canceled, not DeadlineExceeded.
+	if errors.Is(cctx.Err(), context.DeadlineExceeded) {
 		return &extract.MalformedSourceError{
 			MediaType: pdf.MediaType,
 			Err:       fmt.Errorf("%s exceeded %s", s.Name, s.Timeout),
 		}
+	}
+	if aborted != nil && aborted.Load() {
+		return errAborted
 	}
 	if runErr == nil {
 		return nil
@@ -174,6 +180,16 @@ func run(callerCtx, runCtx context.Context, s Spec, sink io.Writer, aborted *ato
 		Err:       fmt.Errorf("%s exited %d: %s", s.Name, exitErr.ExitCode(), diag),
 	}
 }
+
+// labeled is an error with its own message (naming the tool that actually ran,
+// e.g. pdfinfo) that still matches the caller's sentinel with errors.Is.
+type labeled struct {
+	msg      string
+	sentinel error
+}
+
+func (e *labeled) Error() string { return e.msg }
+func (e *labeled) Unwrap() error { return e.sentinel }
 
 // capWriter forwards child stdout to sink, counting bytes; the first write that
 // would cross limit kills the child (via cancel) and fails, so a PDF that
