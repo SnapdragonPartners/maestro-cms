@@ -1,0 +1,13 @@
+# Keeps GitHub Actions pins current, including buggrit's reusable-workflow SHA
+# and its version comment (.github/workflows/buggrit.yml).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns: ["*"]
