@@ -173,7 +173,9 @@ func parseRow(s string) (tsvRow, error) {
 		level: ints[0], page: ints[1], par: ints[2], block: ints[3], line: ints[4],
 		box:  box,
 		conf: clampConf(nums[4]),
-		text: f[11],
+		// Clone: f[11] is a substring of the whole line, which would otherwise
+		// stay alive (numeric columns included) as long as the Layout does.
+		text: strings.Clone(f[11]),
 	}, nil
 }
 

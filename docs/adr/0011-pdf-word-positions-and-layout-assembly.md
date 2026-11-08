@@ -56,8 +56,8 @@ decisions step 3 (rendering, v0.9.0) builds on.
 
 - **`WithMaxLayoutBytes`, default 128 MiB**, separate from the 64 MiB text cap
   because TSV is about 13x plain text. Measured on a 342-page OCR'd scan: 4.35
-  MB of TSV became 9.5 MB of live `Layout` (about 2.2x), so the default bounds
-  one call at roughly 300 MiB of heap. 256 MiB was proposed. 128 MiB was chosen
+  MB of TSV became 6.0 MB of live `Layout` (about 1.4x), so the default bounds
+  one call at roughly 180 MiB of heap. 256 MiB was proposed. 128 MiB was chosen
   because matching the text cap's coverage would need about 830 MiB of TSV
   anyway, so some documents will extract as text but exceed the layout cap
   whatever the default; callers can raise it.

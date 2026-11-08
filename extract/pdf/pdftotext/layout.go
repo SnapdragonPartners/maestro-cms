@@ -18,9 +18,9 @@ const DefaultPdfinfoBinary = geometry.DefaultBinary
 // DefaultMaxLayoutBytes caps the pdftotext -tsv output Layout may read. TSV is
 // about 13x the plain text, so it has its own cap rather than reusing
 // DefaultMaxOutputBytes. The TSV is parsed as it streams and never held raw,
-// the returned Layout takes more memory than the TSV it came from (about 2.2x,
+// the returned Layout takes more memory than the TSV it came from (about 1.4x,
 // measured on a 342-page OCR'd scan), so this cap also bounds one call's heap:
-// roughly 300 MiB at the default.
+// roughly 180 MiB at the default.
 const DefaultMaxLayoutBytes int64 = 128 << 20
 
 var _ pdf.LayoutEngine = (*Engine)(nil)

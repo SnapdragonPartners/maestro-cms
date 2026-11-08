@@ -635,8 +635,8 @@ so the UI's highlights come from the same text the checks ran on.
    `WithMaxGapSpaces` (hard ceiling 32, out-of-range values clamp), because
    maestro-agents tunes them on samples maintainers can't see (§6.3).
 5. ~~Default layout cap~~ — resolved: 128 MiB. The parsed `Layout` measured
-   about 2.2x the TSV's size on the 342-page scan, so this bounds one call at
-   roughly 300 MiB of heap; callers can raise it.
+   about 1.4x the TSV's size on the 342-page scan, so this bounds one call at
+   roughly 180 MiB of heap; callers can raise it.
 6. ~~Dehyphenation~~ — resolved: deferred until a consumer asks (the cost is
    slightly worse retrieval on hyphenated line ends). If built, it lives in
    maestro-cms, not in consumers.
