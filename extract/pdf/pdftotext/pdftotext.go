@@ -10,19 +10,21 @@
 // this Go module stays MIT — but a distributed image that BUNDLES Poppler still
 // carries Poppler's GPL obligations for that artifact. The pdftotext binary must
 // be present at runtime; when it is absent, Pages returns ErrEngineUnavailable.
+//
+// The engine also implements pdf.LayoutEngine: Layout returns each page's size
+// and its words with boxes, from pdftotext -tsv and Poppler's pdfinfo (which
+// ships with pdftotext in poppler-utils and must also be present).
 package pdftotext
 
 import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
-	"os/exec"
 	"strings"
 	"time"
 
-	"github.com/SnapdragonPartners/maestro-cms/extract"
 	"github.com/SnapdragonPartners/maestro-cms/extract/pdf"
+	"github.com/SnapdragonPartners/maestro-cms/extract/pdf/internal/popplerexec"
 )
 
 // DefaultBinary is the pdftotext executable looked up on PATH by default.
@@ -38,10 +40,6 @@ const DefaultTimeout = 30 * time.Second
 // worker's heap. 64 MiB is generous for real documents while preventing OOM.
 const DefaultMaxOutputBytes int64 = 64 << 20
 
-// stderrCapBytes bounds captured diagnostics so a chatty/hostile process cannot
-// grow the heap via stderr either; output past this is dropped.
-const stderrCapBytes = 64 << 10
-
 // ErrEngineUnavailable indicates the pdftotext binary was not found, so the
 // engine cannot run. Consumers can detect this to fall back or surface a clear
 // "install poppler-utils" message.
@@ -54,10 +52,12 @@ var ErrOutputTooLarge = errors.New("pdftotext: output exceeds size limit")
 
 // Engine extracts PDF text via the pdftotext CLI. It is safe for concurrent use.
 type Engine struct {
-	binary    string
-	timeout   time.Duration
-	maxOutput int64
-	layout    bool
+	binary     string
+	infoBinary string
+	timeout    time.Duration
+	maxOutput  int64
+	maxLayout  int64
+	layout     bool
 }
 
 // Option configures an Engine.
@@ -72,6 +72,14 @@ func WithTimeout(d time.Duration) Option { return func(e *Engine) { e.timeout = 
 // WithMaxOutputBytes overrides the extracted-text output cap (default
 // DefaultMaxOutputBytes). Non-positive means the default.
 func WithMaxOutputBytes(n int64) Option { return func(e *Engine) { e.maxOutput = n } }
+
+// WithPdfinfoBinary overrides the pdfinfo executable name/path used by Layout
+// (default DefaultPdfinfoBinary).
+func WithPdfinfoBinary(path string) Option { return func(e *Engine) { e.infoBinary = path } }
+
+// WithMaxLayoutBytes overrides the cap on pdftotext -tsv output in Layout
+// (default DefaultMaxLayoutBytes). Non-positive means the default.
+func WithMaxLayoutBytes(n int64) Option { return func(e *Engine) { e.maxLayout = n } }
 
 // WithLayout runs pdftotext with -layout, which keeps each page's physical
 // layout: a table row's label and its values stay on one line, separated by
@@ -137,62 +145,32 @@ func (e *Engine) maxOut() int64 {
 	return e.maxOutput
 }
 
+// spec returns the shared subprocess settings for one call on data.
+func (e *Engine) spec(binary string, data []byte) popplerexec.Spec {
+	return popplerexec.Spec{
+		Name:           "pdftotext",
+		Binary:         binary,
+		Stdin:          data,
+		Timeout:        e.to(),
+		ErrUnavailable: ErrEngineUnavailable,
+		ErrTooLarge:    ErrOutputTooLarge,
+	}
+}
+
 // Pages runs pdftotext over data and splits its output into per-page text. The
 // child process is bounded by the engine timeout (and the caller's ctx); a
-// timeout or non-zero exit becomes ErrMalformedSource, a canceled ctx becomes a
-// context error, and a missing binary becomes ErrEngineUnavailable.
+// timeout or non-zero exit becomes ErrMalformedSource (a crash also matches
+// pdf.ErrEngineCrashed), a canceled ctx becomes a context error, and a missing
+// binary becomes ErrEngineUnavailable.
 func (e *Engine) Pages(ctx context.Context, data []byte) ([]pdf.Page, error) {
-	bin := e.bin()
-	if _, err := exec.LookPath(bin); err != nil {
-		return nil, fmt.Errorf("%w: %q", ErrEngineUnavailable, bin)
+	s := e.spec(e.bin(), data)
+	s.Args = e.args()
+	s.MaxOutput = e.maxOut()
+	var out bytes.Buffer
+	if err := popplerexec.Run(ctx, s, &out); err != nil {
+		return nil, err //nolint:wrapcheck // popplerexec returns this package's sentinels and malformed/ctx errors
 	}
-
-	cctx, cancel := context.WithTimeout(ctx, e.to())
-	defer cancel()
-
-	// bin is operator-configured (WithBinary), the args are constant literals
-	// (see args), and the PDF data is piped via stdin — there is no injection
-	// vector.
-	cmd := exec.CommandContext(cctx, bin, e.args()...) //nolint:gosec // see comment: fixed args, operator-configured binary, stdin input
-	cmd.Stdin = bytes.NewReader(data)
-	stdout := &capWriter{limit: e.maxOut(), cancel: cancel}
-	stderr := &truncWriter{limit: stderrCapBytes}
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-
-	runErr := cmd.Run()
-
-	// Output cap is checked first: exceeding it kills the process (via cancel), so
-	// the resulting run error / cctx cancellation would otherwise be misread below.
-	if stdout.exceeded {
-		return nil, fmt.Errorf("%w (%d bytes)", ErrOutputTooLarge, e.maxOut())
-	}
-	// Caller cancellation/deadline takes priority and is not a malformed source.
-	if ctx.Err() != nil {
-		return nil, fmt.Errorf("pdftotext: canceled: %w", ctx.Err())
-	}
-	// Our own timeout fired (parent still alive): the parse was too slow / hung.
-	if cctx.Err() != nil {
-		return nil, &extract.MalformedSourceError{
-			MediaType: pdf.MediaType,
-			Err:       fmt.Errorf("pdftotext exceeded %s", e.to()),
-		}
-	}
-	if runErr != nil {
-		// A non-zero exit means pdftotext ran and rejected the input → the PDF is
-		// malformed. Any other error means we could not start/execute the binary
-		// (permissions, fork failure, …) → an operational error, not a bad PDF, so
-		// it must not match ErrMalformedSource (callers fall back/diagnose on it).
-		var exitErr *exec.ExitError
-		if errors.As(runErr, &exitErr) {
-			return nil, &extract.MalformedSourceError{
-				MediaType: pdf.MediaType,
-				Err:       fmt.Errorf("pdftotext exited %d: %s", exitErr.ExitCode(), strings.TrimSpace(stderr.String())),
-			}
-		}
-		return nil, fmt.Errorf("pdftotext: exec failed: %w", runErr)
-	}
-	return splitPages(stdout.String()), nil
+	return splitPages(out.String()), nil
 }
 
 // splitPages turns pdftotext's form-feed-separated output into per-page text.
@@ -213,48 +191,3 @@ func splitPages(out string) []pdf.Page {
 	}
 	return pages
 }
-
-// capWriter buffers child stdout up to limit bytes; the first write that would
-// exceed the cap kills the process (via cancel) and fails, so a PDF that expands
-// to enormous text cannot grow the heap unbounded. It is written only by the
-// exec copy goroutine, so it needs no locking.
-type capWriter struct {
-	buf      bytes.Buffer
-	n        int64
-	limit    int64
-	cancel   context.CancelFunc
-	exceeded bool
-}
-
-func (w *capWriter) Write(p []byte) (int, error) {
-	if w.exceeded || w.n+int64(len(p)) > w.limit {
-		w.exceeded = true
-		w.cancel() // stop pdftotext from producing more output
-		return 0, ErrOutputTooLarge
-	}
-	n, err := w.buf.Write(p)
-	w.n += int64(n)
-	return n, err //nolint:wrapcheck // bytes.Buffer.Write never errors; pass-through
-}
-
-func (w *capWriter) String() string { return w.buf.String() }
-
-// truncWriter captures up to limit bytes and silently drops the rest, always
-// reporting a full write so the process is never stalled by a bounded stderr.
-type truncWriter struct {
-	buf   bytes.Buffer
-	limit int
-}
-
-func (w *truncWriter) Write(p []byte) (int, error) {
-	if rem := w.limit - w.buf.Len(); rem > 0 {
-		if len(p) <= rem {
-			w.buf.Write(p)
-		} else {
-			w.buf.Write(p[:rem])
-		}
-	}
-	return len(p), nil
-}
-
-func (w *truncWriter) String() string { return w.buf.String() }

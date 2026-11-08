@@ -70,6 +70,22 @@ func makeStatementPDF() []byte {
 // makePDF builds a minimal PDF with one page per content stream (Helvetica as
 // /F1 on every page). Offsets are computed so the xref is valid.
 func makePDF(pageContents ...string) []byte {
+	pages := make([]fixturePage, len(pageContents))
+	for i, c := range pageContents {
+		pages[i] = fixturePage{content: c}
+	}
+	return makePDFPages(pages...)
+}
+
+// fixturePage is one page of a synthetic PDF: its content stream and extra
+// page dictionary entries (e.g. "/Rotate 90 /CropBox [...]").
+type fixturePage struct {
+	content string
+	extra   string
+}
+
+// makePDFPages builds a minimal PDF from fixture pages on a 612 x 792 MediaBox.
+func makePDFPages(pageContents ...fixturePage) []byte {
 	// Objects: 1 catalog, 2 pages, 3 font, then a page and its content stream
 	// for each page (4+2i and 5+2i).
 	kids := make([]string, len(pageContents))
@@ -84,9 +100,10 @@ func makePDF(pageContents ...string) []byte {
 	obj(fmt.Sprintf("2 0 obj\n<< /Type /Pages /Kids [%s] /Count %d >>\nendobj\n",
 		strings.Join(kids, " "), len(pageContents)))
 	obj("3 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n")
-	for i, content := range pageContents {
-		obj(fmt.Sprintf("%d 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "+
-			"/Resources << /Font << /F1 3 0 R >> >> /Contents %d 0 R >>\nendobj\n", 4+2*i, 5+2*i))
+	for i, pg := range pageContents {
+		content := pg.content
+		obj(fmt.Sprintf("%d 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] %s "+
+			"/Resources << /Font << /F1 3 0 R >> >> /Contents %d 0 R >>\nendobj\n", 4+2*i, pg.extra, 5+2*i))
 		obj(fmt.Sprintf("%d 0 obj\n<< /Length %d >>\nstream\n%sendstream\nendobj\n", 5+2*i, len(content), content))
 	}
 	xrefPos := b.Len()

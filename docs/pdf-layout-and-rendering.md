@@ -1,10 +1,14 @@
 # Design: PDF layout text, word positions and page rendering
 
-Status: **Proposed.** This is the plan for
+Status: **Accepted.** This is the plan for
 [#25](https://github.com/SnapdragonPartners/maestro-cms/issues/25). It records
 the discussion with maestro-agents on that issue and the measurements behind it.
-Once reviewed, its decisions become ADR 0011, which extends (does not supersede)
-[ADR 0010](adr/0010-pluggable-pdf-engines.md).
+Its decisions are recorded in
+[ADR 0011](adr/0011-pdf-word-positions-and-layout-assembly.md), which extends
+(does not supersede) [ADR 0010](adr/0010-pluggable-pdf-engines.md). Step 1
+shipped in v0.7.0; step 2 is v0.8.0. Where implementation refined the plan,
+ADR 0011 is authoritative (notably: `Conf` is 100 for text-layer words, the
+layout cap is 128 MiB, and the `Rows` thresholds are options).
 
 ## 1. Why
 
@@ -229,7 +233,7 @@ type Word struct {
 	Box   Rect // points; origin top-left of the page box; Y grows down
 	Block int  // engine structure ids, unique within the page
 	Line  int  // unique within the page
-	Conf  int  // OCR confidence if the text layer provides one, else -1
+	Conf  int  // engine confidence 0–100, or -1 if none (Poppler: 100 for every text-layer word)
 }
 
 type Rect struct{ X0, Y0, X1, Y1 float64 }
@@ -286,8 +290,8 @@ Why these flags and tools:
     fixed limit (1 MiB) is malformed output, so one giant "word" can't grow
     the scanner's buffer without bound.
 - Output cap: TSV is ≈13x the plain text, so the layout call has its own cap,
-  `WithMaxLayoutBytes`, default 256 MiB. Reusing the 64 MiB text cap would make
-  documents that extract fine as text fail on layout.
+  `WithMaxLayoutBytes`, default 128 MiB (open question 5). Reusing the 64 MiB
+  text cap would make many documents that extract fine as text fail on layout.
 - Rotation: rotated-page fixtures (`/Rotate 90` and `270`, with and without a
   crop box) verify that Width/Height and word boxes match what `pdftoppm`
   renders (§11).
@@ -312,7 +316,10 @@ type PageText struct {
 
 type Span struct{ Start, End int } // byte offsets into Text; End exclusive
 
-func AssemblePage(p PageLayout, s Strategy) PageText
+func AssemblePage(p PageLayout, s Strategy, opts ...AssembleOption) PageText
+
+func WithRowOverlap(f float64) AssembleOption // Rows only; (0,1], default 0.5
+func WithMaxGapSpaces(n int) AssembleOption   // Rows only; 1..32, default 8
 ```
 
 - **Why two strategies.** `Rows` is right for statements (§3.3). On a
@@ -342,9 +349,10 @@ func AssemblePage(p PageLayout, s Strategy) PageText
     words with positive width), floored at 1 point; a row with no
     positive-width word uses 1 point;
   - a gap becomes `clamp(round(gap / unit), 1, MaxGapSpaces)` spaces, with
-    `MaxGapSpaces` = 8 (enough to read as a column break); overlapping or
-    negative gaps become one space;
-  - the result: assembled text is at most the words' bytes plus 8 bytes per
+    `MaxGapSpaces` = 8 by default (enough to read as a column break),
+    configurable up to a hard ceiling of 32; overlapping or negative gaps
+    become one space;
+  - the result: assembled text is at most the words' bytes plus 32 bytes per
     word plus one byte per row, so its size is bounded by the TSV output that
     was already capped. A test asserts this bound on adversarial layouts
     (huge gaps, zero-width words, all words on one row, one word per row).
@@ -615,8 +623,7 @@ so the UI's highlights come from the same text the checks ran on.
 
 ## 13. Open questions
 
-1. **Releases:** one minor release per step (as in §10), or steps 2 and 3
-   together as v0.8.0?
+1. ~~Releases~~ — resolved: one minor release per step (§10).
 2. ~~`pdf.mode` mechanism~~ — resolved in step 1: an optional
    `pdf.ModeReporter` interface (`Mode() string`) that the Extractor checks
    (§5). The mode is per engine, not per page, so a `Page` field would repeat
@@ -624,11 +631,12 @@ so the UI's highlights come from the same text the checks ran on.
 3. ~~Renderer page size~~ — resolved in review: inference from the image is
    unsound, and a caller-supplied size can't be validated, so the renderer
    always reads it with `pdfinfo` (§7.1).
-4. **`Rows` thresholds:** the overlap fraction and `MaxGapSpaces` are tuned on
-   synthetic fixtures; maestro-agents can tune them on their confidential
-   samples. Expose them as options (with the same hard ceiling), or keep them
-   internal until a second consumer needs different values?
-5. **Default layout cap:** 256 MiB is ≈4x the text cap; is that the right
-   ceiling for a worker's heap?
-6. **Dehyphenation:** add it later as an option with a weaker span contract,
-   or leave it to consumers (who can post-process text, losing exact spans)?
+4. ~~`Rows` thresholds~~ — resolved: exposed as `WithRowOverlap` and
+   `WithMaxGapSpaces` (hard ceiling 32, out-of-range values clamp), because
+   maestro-agents tunes them on samples maintainers can't see (§6.3).
+5. ~~Default layout cap~~ — resolved: 128 MiB. The parsed `Layout` measured
+   about 2.2x the TSV's size on the 342-page scan, so this bounds one call at
+   roughly 300 MiB of heap; callers can raise it.
+6. ~~Dehyphenation~~ — resolved: deferred until a consumer asks (the cost is
+   slightly worse retrieval on hyphenated line ends). If built, it lives in
+   maestro-cms, not in consumers.
