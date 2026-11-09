@@ -415,7 +415,8 @@ func (r *Renderer) Render(ctx context.Context, data []byte, o RenderOptions) (*I
   a malformed PDF, while `-l N` is clamped, so 1..N yields the page count and
   page N's size in one call. On the 342-page scan the two cost the same (0.16 s
   each in one run, within noise of the 0.14 s cited below); the probe
-  costs about 400 bytes of output per page, so pages past 40,000 are refused. The renderer deliberately takes **no page size from the
+  costs about 400 bytes of output per page, so pages past 40,000 are refused.
+  The renderer deliberately takes **no page size from the
   caller**: the explicit pixel flags below force the output size, so a wrong
   caller-supplied size would produce a plausible image with a wrong scale that
   no check could catch. The cost is one extra subprocess (0.14 s on the 342 MB

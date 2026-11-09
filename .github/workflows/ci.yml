@@ -34,8 +34,10 @@ jobs:
           go install github.com/golangci/golangci-lint/cmd/golangci-lint@${{ env.GOLANGCI_LINT_VERSION }}
           go install golang.org/x/vuln/cmd/govulncheck@${{ env.GOVULNCHECK_VERSION }}
       - name: Install poppler-utils
-        # Provides pdftotext so extract/pdf/pdftotext's real round-trip test runs
-        # (it skips when absent). Cheap, stable apt package.
+        # Provides pdftotext, pdfinfo and pdftoppm, so the real-Poppler tests in
+        # extract/pdf/pdftotext and extract/pdf/pdftoppm run (they skip when the
+        # binaries are absent, which would silently drop layout and rendering
+        # coverage). Cheap, stable apt package.
         run: sudo apt-get update && sudo apt-get install -y poppler-utils
       - name: Lint
         run: golangci-lint run
