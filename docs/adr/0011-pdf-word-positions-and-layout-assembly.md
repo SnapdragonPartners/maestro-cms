@@ -116,8 +116,8 @@ decisions step 3 (rendering, v0.9.0) builds on.
   than N alone, because `pdfinfo -f N` past the last page exits as a usage
   error indistinguishable from a malformed PDF; 1..N gives the page count, so
   a page past the end returns `ErrPageOutOfRange`.
-- Range rendering is deferred until a consumer needs bulk rendering (it would need a private temporary directory under a
-  total output cap).
+- Range rendering is deferred until a consumer needs bulk rendering (it would
+  need a private temporary directory under a total output cap).
 
 ## Consequences
 
