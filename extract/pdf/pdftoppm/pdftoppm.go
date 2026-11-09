@@ -16,7 +16,7 @@
 // deployment notes in docs/pdf-layout-and-rendering.md. It passes pdftoppm's
 // -scale-dimension-before-rotation and -jpegopt flags, which Poppler 22.02
 // (Ubuntu 22.04) has; it is tested with 26.01 and 26.04. An older pdftoppm that
-// rejects them fails every render as malformed, naming the flag in the error.
+// lacks them fails every render as malformed; the error names the flag.
 //
 // Licensing: Poppler is GPL. Invoking the installed binaries as subprocesses is
 // a process boundary, so this module stays MIT, but an image that bundles
@@ -329,7 +329,8 @@ func renderArgs(o RenderOptions, w, h int) []string {
 	} else {
 		args = append(args, "-png")
 	}
-	// No -q: it also silences usage errors, so on a Poppler too old for a flag
+	// No -q: it also silences pdftoppm's error for an unknown flag (which it
+	// reads as a file name it can't open), so on a Poppler too old for a flag
 	// above the failure would carry no diagnostic. Warnings on stderr are
 	// harmless (captured, truncated, shown only on failure).
 	return append(args, "-")

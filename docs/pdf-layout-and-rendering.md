@@ -630,8 +630,9 @@ so the UI's highlights come from the same text the checks ran on.
   `-scale-dimension-before-rotation` and `-jpegopt`. Both are in Poppler 22.02
   (Ubuntu 22.04's `poppler-utils`) and later; CI runs 26.01 and development
   used 26.04. An older `pdftoppm` that rejects a flag fails every render as a
-  malformed source, with its usage error in the message (the renderer doesn't
-  pass `-q`, which would hide it). Check with `pdftoppm -h`.
+  malformed source. `pdftoppm` reads an unknown flag as a file name, so the
+  message reads "Couldn't open file '-scale-dimension-before-rotation'" (the
+  renderer doesn't pass `-q`, which would hide it). Check with `pdftoppm -h`.
 - `pdftoppm` needs runtime data that an `ldd`-derived library closure (Morris's
   distroless approach, ADR 0047) doesn't carry:
   - fonts and a fontconfig configuration, or PDFs that don't embed their fonts
