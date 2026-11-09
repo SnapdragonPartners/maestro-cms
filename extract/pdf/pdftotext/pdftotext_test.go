@@ -12,6 +12,7 @@ import (
 
 	"github.com/SnapdragonPartners/maestro-cms/extract"
 	"github.com/SnapdragonPartners/maestro-cms/extract/pdf"
+	"github.com/SnapdragonPartners/maestro-cms/extract/pdf/internal/testpdf"
 	"github.com/SnapdragonPartners/maestro-cms/extract/pdf/pdftotext"
 )
 
@@ -72,49 +73,16 @@ func makeStatementPDF() []byte {
 func makePDF(pageContents ...string) []byte {
 	pages := make([]fixturePage, len(pageContents))
 	for i, c := range pageContents {
-		pages[i] = fixturePage{content: c}
+		pages[i] = fixturePage{Content: c}
 	}
 	return makePDFPages(pages...)
 }
 
-// fixturePage is one page of a synthetic PDF: its content stream and extra
-// page dictionary entries (e.g. "/Rotate 90 /CropBox [...]").
-type fixturePage struct {
-	content string
-	extra   string
-}
+// fixturePage is one page of a synthetic PDF (see testpdf.Page).
+type fixturePage = testpdf.Page
 
 // makePDFPages builds a minimal PDF from fixture pages on a 612 x 792 MediaBox.
-func makePDFPages(pageContents ...fixturePage) []byte {
-	// Objects: 1 catalog, 2 pages, 3 font, then a page and its content stream
-	// for each page (4+2i and 5+2i).
-	kids := make([]string, len(pageContents))
-	for i := range pageContents {
-		kids[i] = fmt.Sprintf("%d 0 R", 4+2*i)
-	}
-	var b bytes.Buffer
-	b.WriteString("%PDF-1.4\n")
-	var offsets []int
-	obj := func(s string) { offsets = append(offsets, b.Len()); b.WriteString(s) }
-	obj("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n")
-	obj(fmt.Sprintf("2 0 obj\n<< /Type /Pages /Kids [%s] /Count %d >>\nendobj\n",
-		strings.Join(kids, " "), len(pageContents)))
-	obj("3 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n")
-	for i, pg := range pageContents {
-		content := pg.content
-		obj(fmt.Sprintf("%d 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] %s "+
-			"/Resources << /Font << /F1 3 0 R >> >> /Contents %d 0 R >>\nendobj\n", 4+2*i, pg.extra, 5+2*i))
-		obj(fmt.Sprintf("%d 0 obj\n<< /Length %d >>\nstream\n%sendstream\nendobj\n", 5+2*i, len(content), content))
-	}
-	xrefPos := b.Len()
-	fmt.Fprintf(&b, "xref\n0 %d\n", len(offsets)+1)
-	b.WriteString("0000000000 65535 f \n")
-	for _, off := range offsets {
-		fmt.Fprintf(&b, "%010d 00000 n \n", off)
-	}
-	fmt.Fprintf(&b, "trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n", len(offsets)+1, xrefPos)
-	return b.Bytes()
-}
+func makePDFPages(pages ...fixturePage) []byte { return testpdf.Build(pages...) }
 
 // TestRealRoundTrip exercises the actual pdftotext binary; it skips when poppler
 // is not installed (CI installs poppler-utils to run it).

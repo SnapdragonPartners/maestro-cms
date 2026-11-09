@@ -3,7 +3,7 @@
 // a per-call timeout, kill on cancellation, a capped stdout and a truncated
 // stderr, and one classification of the outcome.
 //
-// It is internal so the engines (pdftotext today, pdftoppm later) share one copy
+// It is internal so the engines (pdftotext and pdftoppm) share one copy
 // and their safeguards cannot drift apart. Each engine keeps its own exported
 // sentinel errors by passing them in Spec.
 package popplerexec

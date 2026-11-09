@@ -6,9 +6,10 @@ the discussion with maestro-agents on that issue and the measurements behind it.
 Its decisions are recorded in
 [ADR 0011](adr/0011-pdf-word-positions-and-layout-assembly.md), which extends
 (does not supersede) [ADR 0010](adr/0010-pluggable-pdf-engines.md). Step 1
-shipped in v0.7.0; step 2 is v0.8.0. Where implementation refined the plan,
-ADR 0011 is authoritative (notably: `Conf` is 100 for text-layer words, the
-layout cap is 128 MiB, and the `Rows` thresholds are options).
+shipped in v0.7.0, step 2 in v0.8.0, and step 3 (rendering) is v0.9.0. Where
+implementation refined the plan, ADR 0011 is authoritative (notably: `Conf` is
+100 for text-layer words, the layout cap is 128 MiB, the `Rows` thresholds are
+options, and the renderer probes pages 1..N, §7.1).
 
 ## 1. Why
 
@@ -409,7 +410,13 @@ func (r *Renderer) Render(ctx context.Context, data []byte, o RenderOptions) (*I
   up front to decide whether the DPI would exceed `MaxPixels`. So every
   `Render` call first runs `pdfinfo` for that page through the shared geometry
   helper (§6.2, §8), the same source `Layout` uses, so their coordinates agree
-  by construction. The renderer deliberately takes **no page size from the
+  by construction. It asks for pages 1..N, not N alone: `pdfinfo -f N` with N
+  past the last page is a usage error (exit 99) that can't be told apart from
+  a malformed PDF, while `-l N` is clamped, so 1..N yields the page count and
+  page N's size in one call. On the 342-page scan the two cost the same (0.16 s
+  each in one run, within noise of the 0.14 s cited below); the probe
+  costs about 400 bytes of output per page, so pages past 40,000 are refused.
+  The renderer deliberately takes **no page size from the
   caller**: the explicit pixel flags below force the output size, so a wrong
   caller-supplied size would produce a plausible image with a wrong scale that
   no check could catch. The cost is one extra subprocess (0.14 s on the 342 MB
@@ -436,6 +443,13 @@ func (r *Renderer) Render(ctx context.Context, data []byte, o RenderOptions) (*I
   pages, 4–10x faster and ~10x smaller (§3.4). The docs say which to pick.
 - `-cropbox`, matching §6.2.
 - Page out of range → a distinct `ErrPageOutOfRange`, not malformed.
+- Options out of range (negative or non-finite DPI, `MaxPixels` above
+  `MaxPixelsLimit` = 16384, `Quality` outside 1–100, an unknown format) →
+  `ErrInvalidOptions`, before anything runs. The `MaxPixels` ceiling bounds
+  `pdftoppm`'s own memory: it holds the uncompressed bitmap (about 800 MB in
+  color at the ceiling), which the output cap can't see.
+- `Format` has `String()` (`png`, `jpeg`) and `MediaType()` (`image/png`,
+  `image/jpeg`) for callers storing or serving images.
 
 ### 7.2 Safeguards
 
@@ -587,7 +601,9 @@ so the UI's highlights come from the same text the checks ran on.
     SIGABRT (→ `ErrEngineCrashed`, also `ErrMalformedSource`), floods stdout
     (→ cap), sleeps (→ timeout), missing (→ unavailable).
 - **Integration tests with Poppler** (skipped when the binary is absent, as
-  today), on synthetic fixtures committed to the repo:
+  today), on synthetic PDFs that `extract/pdf/internal/testpdf` builds in code
+  (generated, not committed as files) and that the pdftotext and pdftoppm
+  tests share:
   - a statement-shaped table (default vs `-layout`; `Rows` vs `ReadingOrder`);
   - rotated pages (`/Rotate 90`, `270`) on a non-square page, with and without
     a CropBox ≠ MediaBox, rendered through `Render` itself (so with the real
@@ -611,6 +627,13 @@ so the UI's highlights come from the same text the checks ran on.
 - Text needs only `pdftotext`. Layout adds `pdfinfo`. Rendering adds
   `pdftoppm` and `pdfinfo` (the renderer reads page sizes itself). All three
   are in `poppler-utils`.
+- Poppler version for rendering: the renderer passes
+  `-scale-dimension-before-rotation` and `-jpegopt`. Both are in Poppler 22.02
+  (Ubuntu 22.04's `poppler-utils`) and later; CI runs 26.01 and development
+  used 26.04. An older `pdftoppm` that rejects a flag fails every render as a
+  malformed source. `pdftoppm` reads an unknown flag as a file name, so the
+  message reads "Couldn't open file '-scale-dimension-before-rotation'" (the
+  renderer doesn't pass `-q`, which would hide it). Check with `pdftoppm -h`.
 - `pdftoppm` needs runtime data that an `ldd`-derived library closure (Morris's
   distroless approach, ADR 0047) doesn't carry:
   - fonts and a fontconfig configuration, or PDFs that don't embed their fonts
@@ -619,7 +642,20 @@ so the UI's highlights come from the same text the checks ran on.
   - `poppler-data`, for CJK documents.
 - Recommend a CI smoke test in the consumer's image that renders a
   non-embedded-font fixture and checks the result, not just that the binary
-  starts.
+  starts. maestro-cms's own `TestRenderRealNonEmbeddedFont`
+  (`extract/pdf/pdftoppm`) is that check: it renders Helvetica (not embedded)
+  and requires its ink inside the word box `Layout` reports. Running the
+  package's tests in the image, or copying that test, covers it.
+- Sizing a deployment: through `Render` (v0.9.0, Poppler 26.04.0, Apple
+  silicon) on the 342-page scan, page 1 at the default 150 dpi as PNG
+  (1598 × 1279) took 1.1 s and 3.6 MB; page 100 at 300 dpi, capped to 2048 px,
+  took 2.1 s as PNG (2.7 MB) and 0.7 s as JPEG at quality 85 (0.34 MB). Sizes
+  vary from page to page with content: the page in §3.4's table was 1.6 MB as a
+  150 dpi PNG. Each call re-reads the whole PDF, so rendering many pages of a
+  large document is linear in its size (§7.4).
+- Image size and the output cap: PNGs of scanned pages ran 1 to 1.5 bytes per
+  pixel, so the default 64 MiB cap fits them up to about 8000 px on the longer
+  side. For larger `MaxPixels`, use JPEG or raise `WithMaxOutputBytes`.
 - Licensing is unchanged from ADR 0010: Poppler is GPL, invoked as a separate
   process; an image that bundles it carries its obligations.
 
