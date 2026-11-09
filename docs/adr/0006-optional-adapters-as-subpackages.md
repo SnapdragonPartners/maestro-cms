@@ -31,9 +31,12 @@ discipline.
 - A consumer assembles what it needs (for example, registering `extract/pdf` into
   the registry). A convenience "default bundle" may come later.
 - A golangci-lint depguard `core-no-adapters` rule forbids core packages
-  (`content`, `chunk`, root `extract`, root `store`) from importing adapter
-  subpackages (`extract/html|pdf|docx|pptx|markdown`, `store/gcs`, `index/*`). It
-  landed with the first adapter (`extract/html`).
+  (`content`, `chunk`, root `extract`, root `store`, `embed`) from importing
+  adapter subpackages (`extract/html|pdf|docx|pptx|markdown|preset`, the PDF
+  engines `extract/pdf/pdftotext|pdftoppm|purego`, `store/gcs`, `index/*`). It
+  landed with the first adapter (`extract/html`); `.golangci.yaml` holds the
+  current list, and each new adapter is added to it. (This list is a
+  maintenance note, not a change to the decision.)
 
 ## Consequences
 
