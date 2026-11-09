@@ -82,6 +82,9 @@ func TestRenderRealRotation(t *testing.T) {
 				if o.MaxPixels > 0 && max(img.Width, img.Height) != o.MaxPixels {
 					t.Errorf("image %dx%d, want longer side %d", img.Width, img.Height, o.MaxPixels)
 				}
+				if len(p.Words) != 1 {
+					t.Fatalf("page %d: Layout found %d words, want 1", p.Number, len(p.Words))
+				}
 				checkInk(t, img, p.Words[0].Box)
 			})
 		}
@@ -167,6 +170,9 @@ func TestRenderRealNonEmbeddedFont(t *testing.T) {
 	img, err := pdftoppm.New().Render(context.Background(), data, pdftoppm.RenderOptions{Page: 1})
 	if err != nil {
 		t.Fatalf("Render: %v", err)
+	}
+	if len(l.Pages) != 1 || len(l.Pages[0].Words) != 1 {
+		t.Fatalf("Layout = %+v, want one page with one word", l.Pages)
 	}
 	checkInk(t, img, l.Pages[0].Words[0].Box)
 }

@@ -413,7 +413,8 @@ func (r *Renderer) Render(ctx context.Context, data []byte, o RenderOptions) (*I
   by construction. It asks for pages 1..N, not N alone: `pdfinfo -f N` with N
   past the last page is a usage error (exit 99) that can't be told apart from
   a malformed PDF, while `-l N` is clamped, so 1..N yields the page count and
-  page N's size in one call. On the 342-page scan both take 0.16 s; the probe
+  page N's size in one call. On the 342-page scan the two cost the same (0.16 s
+  each in one run, within noise of the 0.14 s cited below); the probe
   costs about 400 bytes of output per page, so pages past 40,000 are refused. The renderer deliberately takes **no page size from the
   caller**: the explicit pixel flags below force the output size, so a wrong
   caller-supplied size would produce a plausible image with a wrong scale that
@@ -625,6 +626,12 @@ so the UI's highlights come from the same text the checks ran on.
 - Text needs only `pdftotext`. Layout adds `pdfinfo`. Rendering adds
   `pdftoppm` and `pdfinfo` (the renderer reads page sizes itself). All three
   are in `poppler-utils`.
+- Poppler version for rendering: the renderer passes
+  `-scale-dimension-before-rotation` and `-jpegopt`. Both are in Poppler 22.02
+  (Ubuntu 22.04's `poppler-utils`) and later; CI runs 26.01 and development
+  used 26.04. An older `pdftoppm` that rejects a flag fails every render as a
+  malformed source, with its usage error in the message (the renderer doesn't
+  pass `-q`, which would hide it). Check with `pdftoppm -h`.
 - `pdftoppm` needs runtime data that an `ldd`-derived library closure (Morris's
   distroless approach, ADR 0047) doesn't carry:
   - fonts and a fontconfig configuration, or PDFs that don't embed their fonts

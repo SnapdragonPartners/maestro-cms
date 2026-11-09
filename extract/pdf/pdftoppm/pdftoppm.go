@@ -13,7 +13,10 @@
 // pdfinfo ship in poppler-utils and must be present at runtime. Rendering also
 // needs fonts and a fontconfig configuration (and poppler-data for CJK), or
 // pages whose fonts aren't embedded render with missing text; see the
-// deployment notes in docs/pdf-layout-and-rendering.md.
+// deployment notes in docs/pdf-layout-and-rendering.md. It passes pdftoppm's
+// -scale-dimension-before-rotation and -jpegopt flags, which Poppler 22.02
+// (Ubuntu 22.04) has; it is tested with 26.01 and 26.04. An older pdftoppm that
+// rejects them fails every render as malformed, naming the flag in the error.
 //
 // Licensing: Poppler is GPL. Invoking the installed binaries as subprocesses is
 // a process boundary, so this module stays MIT, but an image that bundles
@@ -312,6 +315,8 @@ func pixelSize(w, h, dpi float64, maxPixels int) (int, int) {
 // renderArgs: page n only, crop box, exact pixel size (given as displayed;
 // -scale-dimension-before-rotation makes Poppler apply it to the rotated page,
 // which it otherwise doesn't), PDF on stdin, image on stdout.
+// -scale-dimension-before-rotation and -jpegopt are present in Poppler 22.02
+// (Ubuntu 22.04) and later; tested with 26.01 and 26.04.
 func renderArgs(o RenderOptions, w, h int) []string {
 	n := strconv.Itoa(o.Page)
 	args := []string{
@@ -324,7 +329,10 @@ func renderArgs(o RenderOptions, w, h int) []string {
 	} else {
 		args = append(args, "-png")
 	}
-	return append(args, "-q", "-")
+	// No -q: it also silences usage errors, so on a Poppler too old for a flag
+	// above the failure would carry no diagnostic. Warnings on stderr are
+	// harmless (captured, truncated, shown only on failure).
+	return append(args, "-")
 }
 
 // checkHeader decodes the image header and checks it is the requested format

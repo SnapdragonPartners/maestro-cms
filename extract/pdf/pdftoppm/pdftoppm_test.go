@@ -81,7 +81,7 @@ func nan() float64 { var z float64; return z / z }
 func TestRenderArgs(t *testing.T) {
 	got := renderArgs(RenderOptions{Page: 3, Format: JPEG, Quality: 70}, 100, 200)
 	want := []string{"-f", "3", "-l", "3", "-cropbox", "-scale-to-x", "100", "-scale-to-y", "200",
-		"-scale-dimension-before-rotation", "-jpeg", "-jpegopt", "quality=70", "-q", "-"}
+		"-scale-dimension-before-rotation", "-jpeg", "-jpegopt", "quality=70", "-"}
 	if !slices.Equal(got, want) {
 		t.Errorf("args = %q", got)
 	}
