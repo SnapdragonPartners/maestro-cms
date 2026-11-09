@@ -24,8 +24,8 @@ Status: all items done (kept here for the audit trail).
 
 - **Done:** landed with the first adapter subpackage (`extract/html`). The
   `depguard` `core-no-adapters` rule in `.golangci.yaml` denies core packages
-  (`content`, `chunk`, root `extract`, root `store`) from importing the adapter
-  subpackages (`extract/html`, `extract/pdf` and its `pdftotext`, `pdftoppm`
+  (`content`, `chunk`, root `extract`, root `store`, `embed`) from importing
+  the adapter subpackages (`extract/html`, `extract/pdf` and its `pdftotext`, `pdftoppm`
   and `purego` engines, `extract/docx|pptx|markdown|preset`, `store/gcs`,
   `index/*`; `.golangci.yaml` is the source of truth); `_test` files are
   exempt. Verified to fire (a `store -> extract/html` import is rejected) and
