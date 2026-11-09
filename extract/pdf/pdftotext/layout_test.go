@@ -6,10 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -17,6 +14,7 @@ import (
 
 	"github.com/SnapdragonPartners/maestro-cms/extract"
 	"github.com/SnapdragonPartners/maestro-cms/extract/pdf"
+	"github.com/SnapdragonPartners/maestro-cms/extract/pdf/internal/testpdf"
 	"github.com/SnapdragonPartners/maestro-cms/extract/pdf/pdftotext"
 )
 
@@ -24,28 +22,9 @@ var _ pdf.LayoutEngine = (*pdftotext.Engine)(nil)
 
 // ---- fake binaries ------------------------------------------------------
 
-// fakeBin writes an executable shell script and returns its path.
-func fakeBin(t *testing.T, name, script string) string {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("fake binaries are shell scripts")
-	}
-	p := filepath.Join(t.TempDir(), name)
-	if err := os.WriteFile(p, []byte("#!/bin/sh\ncat >/dev/null\n"+script+"\n"), 0o700); err != nil { //nolint:gosec // test helper must be executable
-		t.Fatal(err)
-	}
-	return p
-}
+func fakeBin(t *testing.T, name, script string) string { return testpdf.FakeBin(t, name, script) }
 
-// fakeInfo returns a fake pdfinfo reporting n letter-size pages.
-func fakeInfo(t *testing.T, n int) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "Pages:           %d\n", n)
-	for i := 1; i <= n; i++ {
-		fmt.Fprintf(&b, "Page %4d rot:   0\nPage %4d CropBox: 0 0 612 792\n", i, i)
-	}
-	return fakeBin(t, "pdfinfo", "printf '%s' '"+b.String()+"'")
-}
+func fakeInfo(t *testing.T, n int) string { return testpdf.FakeInfo(t, n) }
 
 const tsvHeaderLine = `level\tpage_num\tpar_num\tblock_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n`
 
@@ -213,33 +192,9 @@ func TestLayoutRealHyphenation(t *testing.T) {
 	}
 }
 
-const rotatedText = "BT /F1 24 Tf 100 200 Td (Rotated) Tj ET\n"
-
-// rotationCases: a 612 x 792 MediaBox, with and without a 400 x 292 CropBox
-// that contains the text.
-var rotationCases = []struct {
-	name   string
-	extra  string
-	w, h   float64
-	rot    int
-	sideon bool // text runs vertically on the displayed page
-}{
-	{"rot0", "", 612, 792, 0, false},
-	{"rot90", "/Rotate 90", 792, 612, 90, true},
-	{"rot270", "/Rotate 270", 792, 612, 270, true},
-	{"rot-90", "/Rotate -90", 792, 612, 270, true},
-	{"crop", "/CropBox [50 50 450 342]", 400, 292, 0, false},
-	{"crop rot90", "/Rotate 90 /CropBox [50 50 450 342]", 292, 400, 90, true},
-	{"crop rot270", "/Rotate 270 /CropBox [50 50 450 342]", 292, 400, 270, true},
-}
-
 func TestLayoutRealRotation(t *testing.T) {
 	needPoppler(t)
-	pages := make([]fixturePage, 0, len(rotationCases)+1)
-	for _, c := range rotationCases {
-		pages = append(pages, fixturePage{Content: rotatedText, Extra: c.extra})
-	}
-	pages = append(pages, fixturePage{Extra: "/Rotate 90"}) // blank rotated page
+	pages := append(testpdf.RotationPages(), fixturePage{Extra: "/Rotate 90"}) // blank rotated page last
 	data := makePDFPages(pages...)
 
 	l, err := pdftotext.New().Layout(context.Background(), data)
@@ -249,11 +204,11 @@ func TestLayoutRealRotation(t *testing.T) {
 	if len(l.Pages) != len(pages) {
 		t.Fatalf("got %d pages, want %d", len(l.Pages), len(pages))
 	}
-	for i, c := range rotationCases {
+	for i, c := range testpdf.Rotations() {
 		p := l.Pages[i]
-		t.Run(c.name, func(t *testing.T) {
-			if p.Width != c.w || p.Height != c.h || p.Rotation != c.rot {
-				t.Fatalf("page = %gx%g rot %d, want %gx%g rot %d", p.Width, p.Height, p.Rotation, c.w, c.h, c.rot)
+		t.Run(c.Name, func(t *testing.T) {
+			if p.Width != c.W || p.Height != c.H || p.Rotation != c.Rot {
+				t.Fatalf("page = %gx%g rot %d, want %gx%g rot %d", p.Width, p.Height, p.Rotation, c.W, c.H, c.Rot)
 			}
 			if len(p.Words) != 1 || p.Words[0].Text != "Rotated" {
 				t.Fatalf("words = %+v", p.Words)
@@ -262,8 +217,8 @@ func TestLayoutRealRotation(t *testing.T) {
 			if b.X0 < 0 || b.Y0 < 0 || b.X1 > p.Width || b.Y1 > p.Height {
 				t.Errorf("box %+v outside the %gx%g page", b, p.Width, p.Height)
 			}
-			if tall := b.Y1-b.Y0 > b.X1-b.X0; tall != c.sideon {
-				t.Errorf("box %+v: tall=%v, want %v", b, tall, c.sideon)
+			if tall := b.Y1-b.Y0 > b.X1-b.X0; tall != c.SideOn {
+				t.Errorf("box %+v: tall=%v, want %v", b, tall, c.SideOn)
 			}
 			checkInk(t, data, p)
 		})

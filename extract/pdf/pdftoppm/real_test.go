@@ -24,34 +24,13 @@ func needPoppler(t *testing.T) {
 	}
 }
 
-const rotatedText = "BT /F1 24 Tf 100 200 Td (Rotated) Tj ET\n"
-
-// rotationCases: a 612 x 792 MediaBox, with and without a 400 x 292 CropBox
-// that contains the text (the same pages pdftotext's layout tests use).
-var rotationCases = []struct {
-	name  string
-	extra string
-}{
-	{"rot0", ""},
-	{"rot90", "/Rotate 90"},
-	{"rot180", "/Rotate 180"},
-	{"rot270", "/Rotate 270"},
-	{"crop", "/CropBox [50 50 450 342]"},
-	{"crop rot90", "/Rotate 90 /CropBox [50 50 450 342]"},
-	{"crop rot270", "/Rotate 270 /CropBox [50 50 450 342]"},
-}
-
 // TestRenderRealRotation renders rotated and cropped pages through Render, at a
 // DPI and capped by MaxPixels, in both formats, and checks that the image is
 // the Layout page size times the reported scale and that the word's box,
 // scaled, contains its ink.
 func TestRenderRealRotation(t *testing.T) {
 	needPoppler(t)
-	pages := make([]testpdf.Page, len(rotationCases))
-	for i, c := range rotationCases {
-		pages[i] = testpdf.Page{Content: rotatedText, Extra: c.extra}
-	}
-	data := testpdf.Build(pages...)
+	data := testpdf.Build(testpdf.RotationPages()...)
 	l, err := pdftotext.New().Layout(context.Background(), data)
 	if err != nil {
 		t.Fatalf("Layout: %v", err)
@@ -66,10 +45,10 @@ func TestRenderRealRotation(t *testing.T) {
 		{"capped png", pdftoppm.RenderOptions{DPI: 300, MaxPixels: 500}},
 		{"capped jpeg", pdftoppm.RenderOptions{DPI: 300, MaxPixels: 700, Format: pdftoppm.JPEG}},
 	}
-	for i, c := range rotationCases {
+	for i, c := range testpdf.Rotations() {
 		p := l.Pages[i]
 		for _, oc := range opts {
-			t.Run(c.name+"/"+oc.name, func(t *testing.T) {
+			t.Run(c.Name+"/"+oc.name, func(t *testing.T) {
 				o := oc.o
 				o.Page = p.Number
 				img, err := r.Render(context.Background(), data, o)

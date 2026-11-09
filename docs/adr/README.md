@@ -25,4 +25,5 @@ described in an ADR without superseding it.
   out-of-process pdftotext recommended, pure-Go fallback, no unsafe default.
 - [0011](0011-pdf-word-positions-and-layout-assembly.md) — PDF word positions
   come from pdftotext -tsv plus pdfinfo; page text is assembled by a pure
-  function (extends 0010).
+  function; pages render via pdftoppm sized from the same pdfinfo geometry
+  (extends 0010).

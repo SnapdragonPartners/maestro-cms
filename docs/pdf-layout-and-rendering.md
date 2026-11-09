@@ -635,10 +635,16 @@ so the UI's highlights come from the same text the checks ran on.
   (`extract/pdf/pdftoppm`) is that check: it renders Helvetica (not embedded)
   and requires its ink inside the word box `Layout` reports. Running the
   package's tests in the image, or copying that test, covers it.
-- Sizing a deployment: on the 342-page scan (Apple silicon), page 1 as a
-  150 dpi PNG took 1.1 s (3.6 MB); as JPEG, 0.4 s (13 KB to 340 KB). A 300 dpi
-  PNG capped at 2048 px took 2.1 s. Each call re-reads the whole PDF, so rendering
-  many pages of a large document is linear in its size (§7.4).
+- Sizing a deployment: through `Render` (v0.9.0, Poppler 26.04.0, Apple
+  silicon) on the 342-page scan, page 1 at the default 150 dpi as PNG
+  (1598 × 1279) took 1.1 s and 3.6 MB; page 100 at 300 dpi, capped to 2048 px,
+  took 2.1 s as PNG (2.7 MB) and 0.7 s as JPEG at quality 85 (0.34 MB). Sizes
+  vary from page to page with content: the page in §3.4's table was 1.6 MB as a
+  150 dpi PNG. Each call re-reads the whole PDF, so rendering many pages of a
+  large document is linear in its size (§7.4).
+- Image size and the output cap: PNGs of scanned pages ran 1 to 1.5 bytes per
+  pixel, so the default 64 MiB cap fits them up to about 8000 px on the longer
+  side. For larger `MaxPixels`, use JPEG or raise `WithMaxOutputBytes`.
 - Licensing is unchanged from ADR 0010: Poppler is GPL, invoked as a separate
   process; an image that bundles it carries its obligations.
 

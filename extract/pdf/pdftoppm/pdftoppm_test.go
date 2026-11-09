@@ -4,12 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"image"
 	"image/png"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -17,6 +15,7 @@ import (
 
 	"github.com/SnapdragonPartners/maestro-cms/extract"
 	"github.com/SnapdragonPartners/maestro-cms/extract/pdf"
+	"github.com/SnapdragonPartners/maestro-cms/extract/pdf/internal/testpdf"
 )
 
 func TestPixelSize(t *testing.T) {
@@ -102,27 +101,9 @@ func TestFormat(t *testing.T) {
 
 // ---- fake binaries ------------------------------------------------------
 
-func fakeBin(t *testing.T, name, script string) string {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("fake binaries are shell scripts")
-	}
-	p := filepath.Join(t.TempDir(), name)
-	if err := os.WriteFile(p, []byte("#!/bin/sh\ncat >/dev/null\n"+script+"\n"), 0o700); err != nil { //nolint:gosec // test helper must be executable
-		t.Fatal(err)
-	}
-	return p
-}
+func fakeBin(t *testing.T, name, script string) string { return testpdf.FakeBin(t, name, script) }
 
-// fakeInfo returns a fake pdfinfo reporting n letter-size pages.
-func fakeInfo(t *testing.T, n int) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "Pages:           %d\n", n)
-	for i := 1; i <= n; i++ {
-		fmt.Fprintf(&b, "Page %4d rot:   0\nPage %4d CropBox: 0 0 612 792\n", i, i)
-	}
-	return fakeBin(t, "pdfinfo", "printf '%s' '"+b.String()+"'")
-}
+func fakeInfo(t *testing.T, n int) string { return testpdf.FakeInfo(t, n) }
 
 // pngFile writes a w x h PNG and returns its path.
 func pngFile(t *testing.T, w, h int) string {

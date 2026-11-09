@@ -134,7 +134,11 @@ type RenderOptions struct {
 	// two disagree, so read the applied scale from Image.
 	DPI float64
 	// MaxPixels limits the image's longer side; 0 means DefaultMaxPixels. At
-	// most MaxPixelsLimit.
+	// most MaxPixelsLimit. Large values also need a larger output cap: a
+	// scanned page encodes to roughly 1 to 1.5 bytes per pixel as PNG (about
+	// 3.6 MB at 1600 px), so above about 8000 px a PNG of a scan can pass the
+	// default 64 MiB and fail with ErrOutputTooLarge. Use JPEG, or raise the cap
+	// with WithMaxOutputBytes.
 	MaxPixels int
 	// Quality is the JPEG quality, 1 to 100; 0 means DefaultQuality. Ignored for
 	// PNG.
@@ -181,7 +185,9 @@ func WithPdfinfoBinary(path string) Option { return func(r *Renderer) { r.infoBi
 func WithTimeout(d time.Duration) Option { return func(r *Renderer) { r.timeout = d } }
 
 // WithMaxOutputBytes overrides the encoded-image cap (default
-// DefaultMaxOutputBytes). Non-positive means the default.
+// DefaultMaxOutputBytes). Non-positive means the default. Raise it with
+// MaxPixels: the default fits PNGs of scanned pages up to about 8000 px on the
+// longer side (see RenderOptions.MaxPixels).
 func WithMaxOutputBytes(n int64) Option { return func(r *Renderer) { r.maxOutput = n } }
 
 // New returns a Renderer.
