@@ -6,6 +6,7 @@ import (
 	"errors"
 	"image"
 	"image/color"
+	"math"
 	"os/exec"
 	"testing"
 
@@ -25,9 +26,9 @@ func needPoppler(t *testing.T) {
 }
 
 // TestRenderRealRotation renders rotated and cropped pages through Render, at a
-// DPI and capped by MaxPixels, in both formats, and checks that the image is
-// the Layout page size times the reported scale and that the word's box,
-// scaled, contains its ink.
+// DPI and capped by MaxPixels, in both formats, and checks that both of the
+// image's sides are the Layout page size times the expected scale and that the
+// word's box, scaled, contains its ink.
 func TestRenderRealRotation(t *testing.T) {
 	needPoppler(t)
 	data := testpdf.Build(testpdf.RotationPages()...)
@@ -58,14 +59,28 @@ func TestRenderRealRotation(t *testing.T) {
 				if img.PageWidth != p.Width || img.PageHeight != p.Height {
 					t.Fatalf("page %gx%g, layout %gx%g", img.PageWidth, img.PageHeight, p.Width, p.Height)
 				}
+				// Both axes, against the size expected from the Layout page and
+				// the options alone (not the renderer's own sizing), so a scale
+				// applied before rotation or to one axis only fails here.
+				maxPx := o.MaxPixels
+				if maxPx == 0 {
+					maxPx = pdftoppm.DefaultMaxPixels
+				}
+				scale := min(o.DPI/72, float64(maxPx)/max(p.Width, p.Height))
+				wantW, wantH := int(math.Round(p.Width*scale)), int(math.Round(p.Height*scale))
+				if absDiff(img.Width, wantW) > 1 || absDiff(img.Height, wantH) > 1 {
+					t.Errorf("image %dx%d, want %dx%d (page %gx%g, scale %g)", img.Width, img.Height, wantW, wantH, p.Width, p.Height, scale)
+				}
+				if (p.Width > p.Height) != (img.Width > img.Height) {
+					t.Errorf("image %dx%d has the wrong orientation for page %gx%g", img.Width, img.Height, p.Width, p.Height)
+				}
+				for _, sc := range []float64{img.ScaleX, img.ScaleY} {
+					if math.Abs(sc-scale) > 1.5/min(p.Width, p.Height) {
+						t.Errorf("scale %g, %g; want %g", img.ScaleX, img.ScaleY, scale)
+					}
+				}
 				if o.MaxPixels > 0 && max(img.Width, img.Height) != o.MaxPixels {
 					t.Errorf("image %dx%d, want longer side %d", img.Width, img.Height, o.MaxPixels)
-				}
-				if o.MaxPixels == 0 {
-					want := o.DPI / 72
-					if d := img.ScaleX - want; d > 0.01 || d < -0.01 {
-						t.Errorf("ScaleX = %g, want %g", img.ScaleX, want)
-					}
 				}
 				checkInk(t, img, p.Words[0].Box)
 			})
@@ -160,4 +175,11 @@ func TestRenderRealNonEmbeddedFont(t *testing.T) {
 func gray(m image.Image, x, y int) uint8 {
 	g, _ := color.GrayModel.Convert(m.At(x, y)).(color.Gray)
 	return g.Y
+}
+
+func absDiff(a, b int) int {
+	if a > b {
+		return a - b
+	}
+	return b - a
 }
