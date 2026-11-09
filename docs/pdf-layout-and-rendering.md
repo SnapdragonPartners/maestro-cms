@@ -599,7 +599,9 @@ so the UI's highlights come from the same text the checks ran on.
     SIGABRT (→ `ErrEngineCrashed`, also `ErrMalformedSource`), floods stdout
     (→ cap), sleeps (→ timeout), missing (→ unavailable).
 - **Integration tests with Poppler** (skipped when the binary is absent, as
-  today), on synthetic fixtures committed to the repo:
+  today), on synthetic PDFs that `extract/pdf/internal/testpdf` builds in code
+  (generated, not committed as files) and that the pdftotext and pdftoppm
+  tests share:
   - a statement-shaped table (default vs `-layout`; `Rows` vs `ReadingOrder`);
   - rotated pages (`/Rotate 90`, `270`) on a non-square page, with and without
     a CropBox ≠ MediaBox, rendered through `Render` itself (so with the real
